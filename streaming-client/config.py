@@ -41,6 +41,7 @@ class Config:
     model: str
     api_key: str | None
     local: bool
+    local_url: str
 
     # Upsampling
     openai_api_key: str
@@ -88,6 +89,10 @@ class Config:
         parser.add_argument(
             "--local", action="store_true", help="drive a local `reactor run` (no key)"
         )
+        parser.add_argument(
+            "--local-url", default=None,
+            help="local runtime URL (default REACTOR_LOCAL_URL or http://localhost:8080)",
+        )
         parser.add_argument("--sink", default=None, choices=("rtmp", "noop"))
         parser.add_argument("--rtmp-url", default=None, help="override RTMP_URL")
         args = parser.parse_args(argv)
@@ -117,6 +122,9 @@ class Config:
             model=args.model or os.environ.get("REACTOR_MODEL", "fasth3"),
             api_key=args.api_key or os.environ.get("REACTOR_API_KEY") or None,
             local=args.local or _flag(os.environ.get("REACTOR_LOCAL")),
+            local_url=args.local_url
+            or os.environ.get("REACTOR_LOCAL_URL")
+            or "http://localhost:8080",
             openai_api_key=openai_api_key,
             openai_base_url=openai_base_url,
             openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),

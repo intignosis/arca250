@@ -166,13 +166,23 @@ class ReactorLink:
 
     async def _run_session(self) -> None:
         if self._config.local:
-            reactor = Reactor(self._config.model, local=True)
+            # The SDK honours a non-default api_url in local mode, so a
+            # runtime on another port (REACTOR_LOCAL_URL) works.
+            reactor = Reactor(
+                self._config.model, local=True, api_url=self._config.local_url
+            )
         else:
             reactor = Reactor(self._config.model, api_key=self._config.api_key)
         disconnected = asyncio.Event()
 
         reactor.on("message", self._on_message)
         reactor.on_status(self._make_status_handler(disconnected))
+        # Registered by wire name *before* connect: the SDK allows handler
+        # registration ahead of the session declaring its tracks, whereas
+        # querying `reactor.tracks` right after connect races that
+        # declaration (an empty list on a slow session start).
+        reactor.track("main_video").on_frame(self._on_video_frame)
+        reactor.track("main_audio").on_frame(self._on_audio_frame)
 
         logger.info(
             "[reactor] connecting to %s (%s)...",
@@ -183,11 +193,6 @@ class ReactorLink:
             "[reactor] connected, session=%s status=%s",
             reactor.session_id, reactor.status,
         )
-
-        video = reactor.tracks.with_direction("recvonly").with_kind("video").one()
-        audio = reactor.tracks.with_direction("recvonly").with_kind("audio").one()
-        video.on_frame(self._on_video_frame)
-        audio.on_frame(self._on_audio_frame)
 
         self._reactor = reactor
         state = await asyncio.wait_for(self._raw_command(reactor, "get_state"), 30)
