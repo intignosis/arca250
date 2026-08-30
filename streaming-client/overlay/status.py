@@ -28,10 +28,14 @@ import logging
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from director import parse_group_tag
-from reactor_link import ReactorLink
+from typing import TYPE_CHECKING
+
+from group_tag import parse_group_tag
 
 from .base import Overlay
+
+if TYPE_CHECKING:
+    from reactor_link import ReactorLink
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +70,7 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 class StreamStatusOverlay(Overlay):
     """Draw queue depth, the playing scene, and the next one, per frame."""
 
-    def __init__(self, link: ReactorLink, chat_command: str = "!prompt") -> None:
+    def __init__(self, link: "ReactorLink", chat_command: str = "!prompt") -> None:
         self._link = link
         self._chat_command = chat_command
         self._current: dict | None = None  # display info of the playing clip

@@ -41,6 +41,7 @@ import time
 from collections.abc import Sequence
 
 from chat import ChatPrompt
+from group_tag import parse_group_tag
 from moderator import Moderator
 from reactor_link import ReactorLink
 from upsampler import PromptUpsampler, SceneGroup
@@ -299,14 +300,3 @@ class Director:
                 "[director] build failed for %s: %s — the queue moves on",
                 label, data.get("reason"),
             )
-
-
-def parse_group_tag(metadata: str) -> dict | None:
-    """Read this client's group tag back out of a clip's metadata echo."""
-    try:
-        tag = json.loads(metadata)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(tag, dict) or "group_id" not in tag:
-        return None
-    return tag
