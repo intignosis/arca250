@@ -93,11 +93,11 @@ runtime:
   checkpoint_dir: "."
 
   # Sequence parallelism spans every GPU (sp_size == num_gpus, tp_size 1).
-  # Four matches FastVideo's tested default for this checkpoint: a 15 s clip
-  # builds in about 15.5 s (12.9 s on eight). Playback is explicit and clips
-  # are pre-built, so the count only moves the enqueue-to-ready wait; it must
-  # divide H3's 56 attention heads.
-  num_gpus: 4
+  # Eight builds a 15 s clip in ~12.9 s — faster than it plays — which is
+  # what keeps a continuously fed stream free of build-starved boundaries
+  # (four measured ~15.5-17 s, slower than playback). The count must divide
+  # H3's 56 attention heads.
+  num_gpus: 8
 
   # true replicates the transformer on every rank (~66 GB per GPU) — the
   # configuration FastVideo's published numbers were measured at, and the
@@ -107,15 +107,16 @@ runtime:
   replicated_dit: true
 
   # Offload policy. The text encoder is ~63 GB and every rank loads its own
-  # copy; offloading it to the host costs ~250 GB of host memory (four ranks —
-  # size resources.memory in reactor.yaml with it) plus a transfer per clip,
-  # and drops the per-GPU footprint from ~92 GB to ~30 GB. On dedicated GPUs
-  # flipping it off is faster; it is on so the model also fits beside other
-  # tenants on a shared machine.
-  offload_text_encoder: true
+  # copy; offloading it to the host would cost ~63 GB of host memory per rank
+  # (~500 GB on eight — size resources.memory in reactor.yaml with it) plus a
+  # transfer per clip. On a dedicated 8×B200 pod the resident footprint
+  # (~92 GB per rank) fits comfortably in the 183 GB of VRAM, so the offload
+  # is off: no per-clip page-in, and the host stays small. Turn it back on
+  # only for shared machines, together with pin_cpu_memory and a much larger
+  # resources.memory.
+  offload_text_encoder: false
   offload_vae: false
 
-  # Pinned host buffers make the per-clip text-encoder page-in several times
-  # faster than pageable memory. On together with the offload above; the cost
-  # is pinning ~63 GB of host memory per rank at load.
-  pin_cpu_memory: true
+  # Pinned host buffers only matter when the offload above is on (they speed
+  # the per-clip page-in); off together with it.
+  pin_cpu_memory: false
