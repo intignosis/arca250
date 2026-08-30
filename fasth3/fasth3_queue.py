@@ -73,11 +73,13 @@ class ClipEntry:
 class ClipQueue:
     """A bounded, ordered queue of :class:`ClipEntry`.
 
-    Order is enqueue order and never changes; builds run through it front to
-    back, so ready entries always form a prefix of the pending ones. Capacity
-    comes from the deployment config (``inference.queue_size``) — every entry
-    can hold a fully built clip in host memory, so the bound is also the memory
-    budget.
+    Builds run through the queue front to back, so ready entries always form
+    a prefix of the pending ones. Order is enqueue order, with one exception:
+    an entry enqueued with ``build_next`` enters at the front of the unbuilt
+    segment rather than the back, and once placed, no entry ever moves.
+    Capacity comes from the deployment config (``inference.queue_size``) —
+    every entry can hold a fully built clip in host memory, so the bound is
+    also the memory budget.
     """
 
     capacity: int
@@ -86,6 +88,18 @@ class ClipQueue:
     def __post_init__(self) -> None:
         if self.capacity < 1:
             raise ValueError(f"queue capacity must be positive, got {self.capacity}")
+
+    def _front_of_unbuilt(self) -> int:
+        """The index where a `build_next` entry enters: the unbuilt segment's front.
+
+        Ready and building entries keep their positions — a build in flight
+        cannot be displaced — so the earliest position an unbuilt entry can
+        take is right behind them.
+        """
+        for index, entry in enumerate(self._entries):
+            if not entry.ready and not entry.building:
+                return index
+        return len(self._entries)
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -98,8 +112,22 @@ class ClipQueue:
         """Whether another enqueue would exceed the capacity."""
         return len(self._entries) >= self.capacity
 
-    def enqueue(self, *, prompt: str, metadata: str, frames: int, seed: int) -> ClipEntry:
-        """Append one generation request and return its entry.
+    def enqueue(
+        self,
+        *,
+        prompt: str,
+        metadata: str,
+        frames: int,
+        seed: int,
+        build_next: bool = False,
+    ) -> ClipEntry:
+        """Add one generation request and return its entry.
+
+        Appended to the back by default. With ``build_next`` the entry enters
+        at the front of the unbuilt segment instead — behind every ready or
+        building entry, ahead of everything still waiting — so it is the next
+        build the scheduler picks. Two ``build_next`` enqueues in a row land
+        newest-first.
 
         Raises:
             ValueError: If the queue is already at capacity.
@@ -113,7 +141,10 @@ class ClipQueue:
             frames=frames,
             seed=seed,
         )
-        self._entries.append(entry)
+        if build_next:
+            self._entries.insert(self._front_of_unbuilt(), entry)
+        else:
+            self._entries.append(entry)
         return entry
 
     def get(self, clip_id: str) -> ClipEntry | None:

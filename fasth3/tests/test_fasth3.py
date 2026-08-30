@@ -139,6 +139,34 @@ def test_the_queue_keeps_enqueue_order():
     assert q.next_to_build() is a
 
 
+def test_build_next_enters_the_unbuilt_segment_front():
+    q = make_queue(capacity=5)
+    ready = q.enqueue(prompt="ready", metadata="", frames=124, seed=1)
+    ready.video, ready.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 4), np.int16)
+    building = q.enqueue(prompt="building", metadata="", frames=124, seed=2)
+    building.building = True
+    waiting = q.enqueue(prompt="waiting", metadata="", frames=124, seed=3)
+
+    jumped = q.enqueue(prompt="jumped", metadata="", frames=124, seed=4, build_next=True)
+    # Behind everything ready or building, ahead of everything waiting.
+    assert [e["prompt"] for e in q.snapshot()] == ["ready", "building", "jumped", "waiting"]
+    assert q.next_to_build() is jumped
+
+    # A second build_next lands newest-first, and nothing already placed moves.
+    q.enqueue(prompt="jumped2", metadata="", frames=124, seed=5, build_next=True)
+    assert [e["prompt"] for e in q.snapshot()] == [
+        "ready", "building", "jumped2", "jumped", "waiting",
+    ]
+
+
+def test_build_next_on_an_all_ready_queue_appends():
+    q = make_queue()
+    first = q.enqueue(prompt="a", metadata="", frames=124, seed=1)
+    first.video, first.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 4), np.int16)
+    q.enqueue(prompt="b", metadata="", frames=124, seed=2, build_next=True)
+    assert [e["prompt"] for e in q.snapshot()] == ["a", "b"]
+
+
 def test_every_clip_gets_a_distinct_uuid():
     q = make_queue()
     ids = {q.enqueue(prompt="p", metadata="", frames=124, seed=0).clip_id for _ in range(3)}
@@ -356,6 +384,13 @@ def test_enqueue_returns_the_full_struct(model):
     # The struct is a plain mapping, because the wire encoder takes only
     # JSON-representable values; ClipInfo is its schema-side declaration.
     assert list(clip) == [field.name for field in dataclasses.fields(ClipInfo)]
+
+
+def test_enqueue_build_next_reorders_the_unbuilt_queue(model):
+    first = run(model.enqueue(prompt="waits", metadata="")).clip
+    jumped = run(model.enqueue(prompt="jumps", metadata="", build_next=True)).clip
+    order = [clip["clip_id"] for clip in model._queue.snapshot()]
+    assert order == [jumped["clip_id"], first["clip_id"]]
 
 
 def test_enqueue_needs_a_prompt(model):

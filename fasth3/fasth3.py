@@ -322,6 +322,17 @@ class FastH3(ReactorModel):
                 "first build."
             ),
         ),
+        build_next: bool = InputField(
+            default=False,
+            description=(
+                "Build this clip ahead of the clips already waiting: it "
+                "enters the queue in front of every clip whose build has not "
+                "started, instead of at the back. Clips already built or "
+                "building are unaffected, and two `build_next` enqueues in a "
+                "row land newest-first. `queue_update` reports the resulting "
+                "order; playback still follows queue order."
+            ),
+        ),
     ) -> ClipQueued:
         """Append one generation request to the queue."""
         prompt = prompt.strip()
@@ -348,6 +359,8 @@ class FastH3(ReactorModel):
             metadata=metadata,
             frames=frames,
             seed=seed,
+            # False on the wire; the InputField sentinel when called directly.
+            build_next=build_next is True,
         )
         await self._send_queue_update()
         await self._send_state_update()

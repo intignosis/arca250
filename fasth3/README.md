@@ -105,7 +105,10 @@ enqueue ──► [ queue, oldest first, up to inference.queue_size ] ──► 
   (`inference.queue_size`, default 10); a full queue refuses further enqueues.
 - **Builds run through the queue front to back**, one at a time, whenever an
   audience is connected — including while another clip is playing. A finished
-  build turns the entry `ready: true`, announced on `queue_update`.
+  build turns the entry `ready: true`, announced on `queue_update`. An
+  `enqueue` with `build_next` enters at the front of the unbuilt segment
+  instead of the back, so it is the next build the scheduler picks; once
+  placed, no entry ever moves.
 - **`play` is the only way out** — unless autoplay is on. Bare `play` takes the
   oldest ready clip; a `clip_id` takes that specific one. Playing consumes the
   entry. When the clip ends — or `stop` cuts it — the output flushes to black
@@ -151,7 +154,7 @@ size in force.
 
 | Command | Parameters | Effect | Rejected when |
 |---|---|---|---|
-| `enqueue` | `prompt` (≤ 800 chars), `metadata` (≤ 2000 chars), `seed` (optional, ≥ 0), `seconds` (optional, 5.167–14.375) | Queues one generation; replies `clip_queued` with the full `ClipInfo`. Without a seed the session's advancing default is used; without `seconds` the session's default length. | queue full, empty prompt |
+| `enqueue` | `prompt` (≤ 800 chars), `metadata` (≤ 2000 chars), `seed` (optional, ≥ 0), `seconds` (optional, 5.167–14.375), `build_next` (optional bool) | Queues one generation; replies `clip_queued` with the full `ClipInfo`. Without a seed the session's advancing default is used; without `seconds` the session's default length. With `build_next` the clip enters ahead of every clip whose build has not started (consecutive ones land newest-first); built and building clips are unaffected. | queue full, empty prompt |
 | `play` | `clip_id` (optional UUID) | Streams the oldest ready clip, or the named one. Emits `clip_started` as frames begin. | already playing, unknown id, clip not ready |
 | `pop` | `clip_id` (UUID) | Removes that clip from the queue, freeing its slot; a build in flight for it is discarded. Replies `clip_popped`. | unknown or missing id |
 | `stop` | — | Cuts the playing clip to black; the queue is untouched. With autoplay on, acts as a skip. Emits `clip_stopped`. | nothing playing |
