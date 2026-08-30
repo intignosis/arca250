@@ -49,6 +49,7 @@ class FastH3Config:
     num_inference_steps: int
     queue_size: int
     warmup_aspects: tuple[str, ...]
+    warmup_frames: tuple[int, ...]
     inference: dict[str, Any]
     runtime: dict[str, Any]
 
@@ -80,20 +81,45 @@ def load_config(config_path: Path | None) -> FastH3Config:
     if queue_size < 1:
         raise ValueError(f"inference.queue_size must be positive, got {queue_size}")
 
+    clip_frames = clip_plan.frames_for_seconds(
+        float(inference.get("clip_seconds", clip_plan.MAX_SECONDS))
+    )
+
     return FastH3Config(
         aspect=aspect,
-        clip_frames=clip_plan.frames_for_seconds(
-            float(inference.get("clip_seconds", clip_plan.MAX_SECONDS))
-        ),
+        clip_frames=clip_frames,
         seed=int(inference.get("seed", 1000)),
         # Sigma-grid POINTS, not transformer forwards: the distilled schedule is
         # five points and exactly four forwards.
         num_inference_steps=int(inference.get("num_inference_steps", 5)),
         queue_size=queue_size,
         warmup_aspects=tuple(str(a) for a in (inference.get("warmup_aspects") or [aspect])),
+        warmup_frames=_parse_warmup_lengths(inference.get("warmup_lengths"), clip_frames),
         inference=inference,
         runtime=runtime,
     )
+
+
+def _parse_warmup_lengths(raw: Any, clip_frames: int) -> tuple[int, ...]:
+    """Resolve ``inference.warmup_lengths`` to the frame counts load() warms.
+
+    ``"default"`` (or nothing) warms only the session's default length;
+    ``"all"`` warms every length the checkpoint can generate; a list of
+    seconds warms those, snapped to legal lengths. The default length is
+    always included — it is the shape every plain `enqueue` uses.
+    """
+    if raw in (None, "", "default"):
+        return (clip_frames,)
+    if raw == "all":
+        frames = set(clip_plan.legal_frame_counts())
+    elif isinstance(raw, (list, tuple)):
+        frames = {clip_plan.frames_for_seconds(float(seconds)) for seconds in raw}
+    else:
+        raise ValueError(
+            f'inference.warmup_lengths must be "default", "all", or a list of seconds, got {raw!r}'
+        )
+    frames.add(clip_frames)
+    return tuple(sorted(frames))
 
 
 def resolve_model_path(config: FastH3Config, weights_root: Path) -> Path:

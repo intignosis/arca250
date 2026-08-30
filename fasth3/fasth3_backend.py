@@ -100,6 +100,7 @@ class FastH3Backend:
         # backend and the sparse kernel.
         self._apply_profile_environment()
         self._validate_profile_dependencies()
+        self._raise_dynamo_limits()
 
         runtime = self._config.runtime
         num_gpus = int(runtime.get("num_gpus", 8))
@@ -164,6 +165,36 @@ class FastH3Backend:
         if encode(padded) != PROMPT_TOKENS:
             logger.warning(f"prompt padded to {encode(padded)} tokens, not {PROMPT_TOKENS}")
         return padded
+
+    @staticmethod
+    def _raise_dynamo_limits() -> None:
+        """Raise torch dynamo's recompile limits in this (parent) process.
+
+        Every distinct clip length is a compile shape, and the fullgraph
+        regional-compile route treats exceeding the limit as a hard failure.
+        This covers the parent; the engine *workers* are spawned interpreters
+        that FastVideo's own imports re-cap at 16, which is what the
+        ``sitecustomize.py`` shipped next to this file fixes — the manifest
+        puts it on ``PYTHONPATH`` so every process in the container loads it.
+        The two share the ``FASTH3_DYNAMO_RECOMPILE_LIMIT`` knob (default 64).
+        """
+        import torch._dynamo.config as dynamo_config
+
+        limit = int(os.environ.get("FASTH3_DYNAMO_RECOMPILE_LIMIT", "64"))
+        dynamo_config.recompile_limit = max(limit, dynamo_config.recompile_limit)
+        dynamo_config.cache_size_limit = max(limit, dynamo_config.cache_size_limit)
+        dynamo_config.accumulated_recompile_limit = max(
+            512, dynamo_config.accumulated_recompile_limit
+        )
+        dynamo_config.accumulated_cache_size_limit = max(
+            512, dynamo_config.accumulated_cache_size_limit
+        )
+        dynamo_config.fail_on_recompile_limit_hit = False
+        logger.info(
+            "dynamo recompile limits raised",
+            recompile_limit=dynamo_config.recompile_limit,
+            in_workers="via /app/sitecustomize.py on PYTHONPATH",
+        )
 
     @staticmethod
     def _preload_native_imports() -> None:
@@ -360,6 +391,12 @@ class FastH3Backend:
         it here means the first real clip builds at warm speed. Results are
         discarded: ``return_frames=False, save_video=False`` skips the whole
         post-decode path, so a warm-up costs generation time and nothing else.
+
+        Two axes are warmed: every configured canvas at the default length,
+        and every configured length (``inference.warmup_lengths``) at the
+        primary canvas — the shapes a feed of varied `seconds` values actually
+        hits. The cross product is deliberately not warmed; a non-primary
+        canvas at a non-default length still pays its stall on first use.
         """
         aspects = self._config.warmup_aspects
         cold = [a for a in clip_plan.ASPECT_CHOICES if a not in aspects]
@@ -367,12 +404,25 @@ class FastH3Backend:
             logger.info(
                 "aspects left cold; their first clip pays a one-off compile stall", aspects=cold
             )
-        for aspect in aspects:
+        shapes: list[tuple[str, int]] = [
+            (aspect, self._config.clip_frames) for aspect in aspects
+        ]
+        shapes += [
+            (aspects[0], frames)
+            for frames in self._config.warmup_frames
+            if frames != self._config.clip_frames
+        ]
+        logger.info(
+            "warm-up plan",
+            shapes=len(shapes),
+            lengths=[round(clip_plan.seconds_for_frames(f), 3) for f in self._config.warmup_frames],
+        )
+        for index, (aspect, frames) in enumerate(shapes, start=1):
             height, width = clip_plan.canvas_for_choice(aspect)
             started = time.monotonic()
             self.generator.generate(
                 self._request(
-                    frames=self._config.clip_frames,
+                    frames=frames,
                     prompt=WARMUP_PROMPT,
                     seed=self._config.seed,
                     height=height,
@@ -382,8 +432,9 @@ class FastH3Backend:
             )
             logger.info(
                 "warmed clip shape",
+                progress=f"{index}/{len(shapes)}",
                 aspect=aspect,
-                frames=self._config.clip_frames,
+                frames=frames,
                 height=height,
                 width=width,
                 seconds=round(time.monotonic() - started, 2),

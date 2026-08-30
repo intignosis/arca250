@@ -63,11 +63,17 @@ inference:
 
   # Canvases warmed at load, one full build each at the default clip length.
   # Adding an entry costs pod-boot time; leaving one out means the first clip
-  # built at that canvas pays a one-off compile stall. A non-default
-  # `set_clip_seconds` is a new shape too and pays the same stall on its first
-  # build. Start with the default only and widen once the boot cost is
-  # measured.
+  # built at that canvas pays a one-off compile stall.
   warmup_aspects: ["16:9"]
+
+  # Clip lengths warmed at load, each one throwaway build at the primary
+  # canvas: "default" (just clip_seconds), "all" (every legal length — there
+  # are 14, 5.167 s to 14.375 s), or a list of seconds. Every unwarmed length
+  # pays a one-off ~20 s regional-compile stall on its first build. "all"
+  # costs roughly 14 builds of boot time (~5-8 min on four B200s) and is the
+  # right setting for a feed that enqueues arbitrary lengths, like the
+  # streaming client's upsampler.
+  warmup_lengths: "all"
 
 runtime:
   # Weight bundle layout, relative to the mounted weights root. One HF snapshot

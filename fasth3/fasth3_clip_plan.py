@@ -72,6 +72,15 @@ MIN_SECONDS_PUBLISHED = math.ceil(MIN_SECONDS * 1000) / 1000
 MAX_SECONDS_PUBLISHED = math.floor(MAX_SECONDS * 1000) / 1000
 
 
+def legal_frame_counts() -> tuple[int, ...]:
+    """Every clip length this checkpoint can generate, in frames, ascending.
+
+    The `17n + 5` alignment makes consecutive legal lengths exactly one chunk
+    (17 frames) apart, so the whole space is a simple range.
+    """
+    return tuple(range(MIN_FRAMES, MAX_FRAMES + 1, _FRAMES_PER_CHUNK))
+
+
 def frames_for_seconds(seconds: float) -> int:
     """Snap a requested clip length to the nearest length the model can make.
 
@@ -149,5 +158,6 @@ __all__ = [
     "canvas_for_aspect",
     "canvas_for_choice",
     "frames_for_seconds",
+    "legal_frame_counts",
     "seconds_for_frames",
 ]

@@ -3,7 +3,7 @@ $schema: reactor/v1
 
 model:
   name: fasth3
-  version: v0.3.0
+  version: v0.3.1
   description: |
     Generate 768p video clips with synchronized audio from a queue of prompts.
     MiniMax-H3 (35B), distilled by FastVideo to four transformer forwards with
@@ -90,7 +90,17 @@ build:
   # Every component loads from the local bundle, so the HF libraries must never
   # reach for the network — offline turns a missing file into a clear error
   # instead of a hang.
+  #
+  # PYTHONPATH=/app is load-bearing: it makes every Python interpreter in the
+  # container — the runtime and each engine worker FastVideo spawns — import
+  # /app/sitecustomize.py at start, which is the only place dynamo's
+  # recompile limit can be raised inside the spawned workers (torch 2.12 maps
+  # no env var onto it, and FastVideo's own imports re-cap it at 16). The
+  # limit is FASTH3_DYNAMO_RECOMPILE_LIMIT; sized to the 14 legal clip
+  # lengths times the warmed canvases, with headroom.
   runtime_env:
     PYTORCH_ALLOC_CONF: expandable_segments:True
     HF_HUB_OFFLINE: "1"
     TRANSFORMERS_OFFLINE: "1"
+    PYTHONPATH: /app
+    FASTH3_DYNAMO_RECOMPILE_LIMIT: "64"

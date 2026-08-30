@@ -239,6 +239,41 @@ def test_the_shipped_config_parses(tmp_path):
     assert config.queue_size == 10
     assert config.aspect == "16:9"
     assert config.clip_frames == clip_plan.MAX_FRAMES
+    # The shipped config warms every legal length: a feed of arbitrary
+    # `seconds` values then never pays a first-use compile stall.
+    assert config.warmup_frames == clip_plan.legal_frame_counts()
+
+
+def test_every_legal_length_is_aligned_and_within_bounds():
+    counts = clip_plan.legal_frame_counts()
+    assert counts[0] == clip_plan.MIN_FRAMES
+    assert counts[-1] == clip_plan.MAX_FRAMES
+    assert all(frames % 17 == 5 for frames in counts)
+    assert len(counts) == 14
+
+
+def test_warmup_lengths_parse_all_shapes(tmp_path):
+    default = tmp_path / "default.yaml"
+    default.write_text("inference: {}\n", encoding="utf-8")
+    config = load_config(default)
+    assert config.warmup_frames == (config.clip_frames,)
+
+    listed = tmp_path / "listed.yaml"
+    listed.write_text(
+        "inference:\n  warmup_lengths: [5.167, 8.0]\n", encoding="utf-8"
+    )
+    config = load_config(listed)
+    # Snapped to legal lengths, default length always included, ascending.
+    assert config.warmup_frames == tuple(sorted({
+        clip_plan.frames_for_seconds(5.167),
+        clip_plan.frames_for_seconds(8.0),
+        config.clip_frames,
+    }))
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("inference:\n  warmup_lengths: sometimes\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_config(bad)
 
 
 def test_a_bad_aspect_or_queue_size_fails_startup(tmp_path):
@@ -268,6 +303,7 @@ def make_config(queue_size=3) -> FastH3Config:
         num_inference_steps=5,
         queue_size=queue_size,
         warmup_aspects=("16:9",),
+        warmup_frames=(clip_plan.frames_for_seconds(clip_plan.MAX_SECONDS),),
         inference={},
         runtime={},
     )

@@ -74,12 +74,15 @@ reactor run
 python client/client.py
 ```
 
-`load()` warms one throwaway clip per configured canvas before the pod reports
-ready, so the first real build runs at warm speed. Every distinct frame count
-and canvas is a separate one-time compile cost, which is why
-`inference.warmup_aspects` in [`fasth3.yaml`](./fasth3.yaml) is a deliberately
-short list and why the first build at a non-default `set_clip_seconds` pays a
-one-off stall.
+`load()` warms one throwaway clip per configured canvas
+(`inference.warmup_aspects`) and per configured clip length
+(`inference.warmup_lengths`) before the pod reports ready, so real builds run
+at warm speed. Every distinct frame count and canvas is a separate one-time
+compile cost. The shipped config warms **all 14 legal lengths** at the
+primary canvas — several extra minutes of boot, bought so a feed that
+enqueues arbitrary `seconds` values (the streaming client's upsampler does)
+never pays a mid-session compile stall; set `warmup_lengths: "default"` for
+the old fast boot when every enqueue uses one length.
 
 Before blaming the adapter for slow builds, baseline the recipe itself with
 FastVideo's own `examples/inference/basic/basic_fasth3.py` at the same settings.
@@ -226,8 +229,9 @@ instead of re-deriving these rules.
   profile (source-built sm100a kernel, regional compile, replicated DiT,
   pinned offloaded text encoder) a 14.375 s clip builds in **14.4 s on four
   B200s — 1.0x realtime**, flat across prompts. A `seconds` value the
-  deployment has not built before adds a one-off ~20 s compile on its first
-  build; see the recompile hazard under Deployment learnings.
+  deployment did not warm adds a one-off ~20 s compile on its first build —
+  the shipped `warmup_lengths: "all"` prevents that for every legal length;
+  see the recompile notes under Deployment learnings.
 - **Play-to-first-frame** is near-instant for a ready clip — the frames are
   already in host memory; the only latency is the transport.
 - **`stop`** cuts to black within a fraction of a second: the emitter checks the
@@ -303,8 +307,9 @@ tree arrives through `requirements.txt` and an upgrade is a one-line bump.
 | `fasth3_assets.py` | Config parsing and weights-bundle validation |
 | `fasth3_clip_plan.py` | Clip geometry: valid lengths, frame counts, canvases |
 | `fasth3_session_rules.py` | Which commands each session state accepts |
-| `fasth3.yaml` | `inference:` the recipe and queue size, `runtime:` weight layout and engine shape |
+| `fasth3.yaml` | `inference:` the recipe, queue size and warm-up plan, `runtime:` weight layout and engine shape |
 | `reactor.yaml` | The manifest: identity, version, resources, runtime, image build |
+| `sitecustomize.py` | Raises dynamo's recompile limits in every container process, spawned engine workers included (via `PYTHONPATH=/app`) |
 | `tests/` | Structural tests that need no GPU |
 | `client/` | Reference SDK client that drives the whole queue contract and saves what it receives |
 
@@ -355,24 +360,30 @@ equivalent, decode ~2.5 s. Play-to-first-frame 0.22–0.25 s; `stop`-to-black
   its `functional.resample` is pure torch ops) are pinned to torch-2.12
   matched builds explicitly.
 
-### Known hazard, unresolved: varied clip lengths crash the engine
+### Varied clip lengths and the recompile limit (resolved)
 
 Every distinct `seconds` value is a new compile shape. torch dynamo's
 `recompile_limit` defaults to **8**, and the regional-compile route runs
 fullgraph, where exceeding the limit is a **hard failure**
 (`FailOnRecompileLimitHit`) that kills the engine workers and takes the whole
 serving process down — observed live after enqueueing many different lengths.
-Constraints on a fix: the limit cannot be raised via environment variables in
-torch 2.12 (they do not map; verified), and it must be raised inside the
-*engine worker* processes — FastVideo itself sets it in code in two of its own
-modules (`layers/lora/linear.py`, `third_party/longcat_video/.../
-bsa_interface.py`), which suggests either an upstream patch, a
-`sitecustomize.py` baked into the image, or an import-time hook FastVideo
-runs in workers. Until one of those lands, **keep the set of distinct clip
-lengths per session small (well under 8)** — bucket lengths client-side —
-or set `inference_torch_compile: false` and accept the eager route's
-overhead. There are 14 legal lengths total; warming them all at load costs
-~20 s compile each.
+The fix has to respect two facts, both verified: torch 2.12 maps no
+environment variable onto the limit, and it must be raised inside the *engine
+worker* processes — they are spawned, never forked, so parent-process
+settings do not carry over, and FastVideo's own imports re-cap the limits
+in two of its modules (`layers/lora/linear.py` sets 16,
+`third_party/longcat_video/.../bsa_interface.py` sets 32).
+
+The shipped mechanism is [`sitecustomize.py`](./sitecustomize.py):
+`runtime_env` in `reactor.yaml` sets `PYTHONPATH=/app`, so every Python
+interpreter in the container — the runtime and each spawned worker — imports
+it at start. It installs an import hook that re-raises the limits *after*
+`torch._dynamo.config` and after each of FastVideo's two lowering modules
+execute, so the highest setting wins regardless of import order. The limit is
+`FASTH3_DYNAMO_RECOMPILE_LIMIT` (default 64 — 14 legal lengths times the
+warmed canvases, with headroom); the backend also raises the parent process
+directly at `load()`. The compile *stall* on a first-seen length is a
+separate cost, covered by `inference.warmup_lengths` below.
 
 ### Serving mechanics worth knowing
 
