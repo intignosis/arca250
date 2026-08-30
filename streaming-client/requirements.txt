@@ -1,0 +1,5 @@
+reactor-sdk>=1.1.1
+numpy
+openai>=1.40
+aiohttp>=3.9
+python-dotenv>=1.0

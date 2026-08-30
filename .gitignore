@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local secrets (API keys, stream keys); .env.example is the committed template.
+.env
+.env.local
+
+# Editor and OS state
+.vscode/
+.idea/
+.DS_Store
