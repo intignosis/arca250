@@ -55,7 +55,9 @@ chat is quiet, an idle filler tops the queue up to `IDLE_QUEUE_TARGET` with
 single-scene groups tagged `generated: true`; viewer groups evict those
 (`pop`) when they need the room. The **pacer** converts clip-shaped output
 (24 fps while playing, nothing between clips) into the frame-every-period
-stream RTMP requires, filling gaps with repeated frames and silence.
+stream RTMP requires, filling gaps with repeated frames and silence, and
+passes every outgoing frame through the **overlay** (queue depth, playing
+scene title/author, coming up — all reconstructed from the metadata echo).
 
 ### Load-bearing invariants — violating any of these breaks the product
 
@@ -94,6 +96,7 @@ stream RTMP requires, filling gaps with repeated frames and silence.
 | Upsampling behaviour / the style prompt | `streaming-client/upsampler.py` | keep the constraint rules intact — the rationale is in the module docstring |
 | Moderation policy | `streaming-client/moderator.py` | keep it fail-closed; README's Moderation section |
 | Idle filler / eviction | `streaming-client/director.py` (`run_idle`, `_evict_fillers`) + `idle_prompts.txt` | README's Idle filler section |
+| What the broadcast shows on top of the video | `streaming-client/overlay/` (contract in `base.py`; shipped overlay in `status.py`) | README's Overlay section; keep compose non-mutating and per-frame cheap |
 
 ## Model rules (`fasth3/`) — distilled from the Reactor cookbook
 

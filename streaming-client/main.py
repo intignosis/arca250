@@ -31,6 +31,7 @@ from chat import ChatSource, TwitchChat, YouTubeChat
 from config import Config
 from director import Director
 from moderator import Moderator
+from overlay import StreamStatusOverlay
 from pacer import Pacer
 from reactor_link import MODEL_FPS, MODEL_SAMPLE_RATE, ReactorLink
 from sinks import AudioFormat, VideoFormat, make_sink
@@ -129,16 +130,24 @@ async def main() -> None:
         # the sink survive every reconnect.
         await link.wait_first_state()
         width, height = link.canvas
+        # The overlay to broadcast is a code decision; swap the class here.
+        overlay = (
+            StreamStatusOverlay(link, chat_command=config.chat_command)
+            if config.overlay_enabled
+            else None
+        )
         pacer = Pacer(
             sink,
             VideoFormat(width=width, height=height, fps=MODEL_FPS),
             AudioFormat(sample_rate=MODEL_SAMPLE_RATE, channels=1),
+            overlay=overlay,
         )
         link.attach_pacer(pacer)
         tasks.append(asyncio.create_task(pacer.run(), name="pacer"))
         logger.info(
-            "streaming %dx%d@%dfps to sink=%s — chat command %r on %s",
+            "streaming %dx%d@%dfps to sink=%s (overlay %s) — chat command %r on %s",
             width, height, MODEL_FPS, config.sink,
+            "on" if overlay else "off",
             config.chat_command,
             ", ".join(s.name for s in chat_sources) or "nothing",
         )

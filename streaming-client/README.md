@@ -30,6 +30,7 @@ idle_prompts.txt ──┘ (filler)     │
                    ▼
                  Pacer  ──── constant-rate clock: fills gaps with
                    │         repeated frames + silence
+                   │ ──── Overlay (queue badge, now playing, coming up)
                    ▼
               StreamSink ──▶ rtmp (ffmpeg) | noop | (yours)
 ```
@@ -43,7 +44,8 @@ idle_prompts.txt ──┘ (filler)     │
 | `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length clamp, chunk-count cap). |
 | `moderator.py` | The moderations call and the fail-closed policy. |
 | `idle_prompts.txt` | The curated filler prompts, one per line. |
-| `pacer.py` | The 24 fps metronome between bursty/clip-shaped model output and the sink's need for a frame + audio every period, forever. |
+| `pacer.py` | The 24 fps metronome between bursty/clip-shaped model output and the sink's need for a frame + audio every period, forever. Hands each outgoing frame to the overlay. |
+| `overlay/` | The per-frame decoration interface (`base.py`) and the shipped status overlay (`status.py`). |
 | `sinks/` | The output interface (`base.py`), ffmpeg RTMP (`rtmp.py`), no-op (`noop.py`), factory (`__init__.py`). |
 | `chat/` | The chat-source interface (`base.py`), anonymous Twitch IRC (`twitch.py`), YouTube Data API poller (`youtube.py`). |
 
@@ -155,6 +157,33 @@ Viewers always outrank filler, in three ways:
 The target (6) sits deliberately under the queue capacity (10): the gap is
 headroom a viewer group can take without any eviction at all.
 
+## Overlay
+
+Every outgoing frame — live, repeated, or black — passes through the overlay
+before the sink, so the broadcast carries live status even between clips.
+`OVERLAY_ENABLED` (default on) is the only configuration; *which* overlay
+runs is a code decision in `main.py`, and building a different one means
+implementing `overlay/base.py`'s `Overlay` (its docstring is the contract:
+per-frame budget, never mutate the input frame, state via link listeners
+only).
+
+The shipped `StreamStatusOverlay` keeps to the frame's edges (small type on
+thin translucent plates):
+
+- **top-left, while playing**: `NOW <title> — scene 2/3 · by <author>`, with
+  a dimmer `COMING UP <next>` beneath it (when the next clip is the same
+  group it reads `COMING UP scene 3/3` instead of repeating the title);
+- **top-left, while idle**: `UP NEXT <title> · by <author>` — or, with an
+  empty queue, an invitation to type the chat command;
+- **top-right**: `QUEUE n/capacity`.
+
+Everything it shows is reconstructed from the wire — the metadata group tags
+(title, author, scene numbering) and the link's queue mirror — so it survives
+client restarts, credits idle filler clips to `auto`, and degrades untagged
+clips (enqueued by some other client) to their prompt text. Rendering is
+cached: Pillow rasterizes a panel only when its text changes; the per-frame
+cost is numpy alpha blends (~0.6 ms at 1344×768).
+
 ## Sinks
 
 `sinks/base.py` is the contract: by the time a sink sees data, the pacer has
@@ -262,7 +291,8 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
   when they fully fit; all enqueues (viewer and filler) serialized through
   the director's one lock; eviction pops only `generated: true` clips;
   moderation fails closed; autoplay re-enabled on every connect; pacer/sink
-  never torn down on reconnect; sinks never block the event loop.
+  never torn down on reconnect; sinks never block the event loop; overlays
+  never mutate the pacer's frame and stay within a few ms per compose.
 - `../fasth3/fasth3_types.py` is the wire contract. If the model's schema moves
   (new fields, renamed messages), update `reactor_link.py`'s mirror and the
   director's message handling together, and re-check this README's model

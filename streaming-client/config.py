@@ -61,6 +61,9 @@ class Config:
     idle_prompts: tuple[str, ...]
     idle_queue_target: int
 
+    # Overlay (which overlay runs is code, main.py; this only switches it)
+    overlay_enabled: bool
+
     # Sink
     sink: str  # "rtmp" | "noop"
     rtmp_url: str | None
@@ -125,6 +128,7 @@ class Config:
             moderation_model=os.environ.get("MODERATION_MODEL", "omni-moderation-latest"),
             idle_prompts=idle_prompts,
             idle_queue_target=int(os.environ.get("IDLE_QUEUE_TARGET", "6")),
+            overlay_enabled=_flag(os.environ.get("OVERLAY_ENABLED", "1")),
             sink=(args.sink or os.environ.get("SINK", "noop")).lower(),
             rtmp_url=args.rtmp_url or os.environ.get("RTMP_URL") or None,
             rtmp_video_bitrate_k=int(os.environ.get("RTMP_VIDEO_BITRATE_K", "4500")),

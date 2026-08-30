@@ -3,3 +3,4 @@ numpy
 openai>=1.40
 aiohttp>=3.9
 python-dotenv>=1.0
+pillow>=10.0

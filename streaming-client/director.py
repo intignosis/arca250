@@ -261,7 +261,7 @@ class Director:
         for clip in reversed(self._link.queue_clips):
             if popped >= needed:
                 break
-            tag = _parse_group_tag(clip.get("metadata", ""))
+            tag = parse_group_tag(clip.get("metadata", ""))
             if not tag or not tag.get("generated"):
                 continue
             reply = await self._link.send_command(
@@ -282,7 +282,7 @@ class Director:
         clip = data.get("clip") if isinstance(data, dict) else None
         if not isinstance(clip, dict):
             return
-        tag = _parse_group_tag(clip.get("metadata", ""))
+        tag = parse_group_tag(clip.get("metadata", ""))
         label = (
             f"'{tag['title']}' scene {tag['scene']}/{tag['scenes']} "
             f"(by {tag['author']}@{tag['source']})"
@@ -301,7 +301,7 @@ class Director:
             )
 
 
-def _parse_group_tag(metadata: str) -> dict | None:
+def parse_group_tag(metadata: str) -> dict | None:
     """Read this client's group tag back out of a clip's metadata echo."""
     try:
         tag = json.loads(metadata)

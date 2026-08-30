@@ -35,6 +35,7 @@ import time
 
 import numpy as np
 
+from overlay import Overlay
 from sinks import AudioFormat, StreamSink, VideoFormat
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,13 @@ _RESNAP_PERIODS = 8
 class Pacer:
     """Constant-rate A/V clock between the model callbacks and one sink."""
 
-    def __init__(self, sink: StreamSink, video: VideoFormat, audio: AudioFormat) -> None:
+    def __init__(
+        self,
+        sink: StreamSink,
+        video: VideoFormat,
+        audio: AudioFormat,
+        overlay: Overlay | None = None,
+    ) -> None:
         if audio.sample_rate % video.fps != 0:
             raise ValueError(
                 f"sample rate {audio.sample_rate} must divide evenly by fps {video.fps}"
@@ -59,6 +66,8 @@ class Pacer:
         self._sink = sink
         self._video = video
         self._audio = audio
+        self._overlay = overlay
+        self._overlay_errors = 0
         self._samples_per_tick = audio.sample_rate // video.fps
 
         max_frames = int(video.fps * _BUFFER_SECONDS)
@@ -163,7 +172,20 @@ class Pacer:
                 self._last_frame = self._frames.popleft()
             else:
                 self.repeated_frames += 1
-            self._sink.send_video(self._last_frame)
+            outgoing = self._last_frame
+            if self._overlay is not None:
+                # An overlay bug must not take the broadcast down; compose
+                # never mutates _last_frame, so the clean frame survives.
+                try:
+                    outgoing = self._overlay.compose(outgoing)
+                except Exception:
+                    self._overlay_errors += 1
+                    if self._overlay_errors in (1, 100) or self._overlay_errors % 10_000 == 0:
+                        logger.exception(
+                            "[pacer] overlay compose failed (%d times)",
+                            self._overlay_errors,
+                        )
+            self._sink.send_video(outgoing)
             self._sink.send_audio(self._pull_audio_tick())
             self.ticks += 1
 
