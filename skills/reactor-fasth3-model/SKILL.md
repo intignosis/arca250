@@ -1,0 +1,245 @@
+---
+name: reactor-fasth3-model
+description: Full context for the fasth3 model in this repo — what FastH3/MiniMax-H3 is, how the Reactor Runtime serves it, the queue contract and every design decision behind it, the measured performance profile and its load-bearing tricks, and how to build and run it with the reactor CLI or raw docker. Read before changing anything under fasth3/, debugging generation speed or crashes, serving the model locally, or writing a client against it.
+---
+
+# The fasth3 model: full working context
+
+`fasth3/` turns the FastH3 video model into a **clip queue with a player**,
+served by the open-source [Reactor Runtime](https://github.com/reactor-team/reactor-runtime).
+Clients enqueue prompt-driven generations, the model builds them ahead of
+time, and nothing reaches the media tracks until asked (or autoplay is on).
+This file is the context a new agent needs; the per-file detail lives in
+[`fasth3/README.md`](../../fasth3/README.md) and the code's own docstrings.
+
+## 1. The underlying model
+
+[FastH3 Preview v1](https://huggingface.co/FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree)
+is [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) distilled by
+[FastVideo](https://github.com/hao-ai-lab/FastVideo) with data-free DMD2 down
+to **four transformer forwards**, plus VSA-H3 sparse video attention at 90%
+sparsity. Facts that shape everything downstream:
+
+- **Fully bidirectional, not autoregressive.** One denoise covers the whole
+  clip's token sequence at once. There is no KV cache, no rollout, no
+  continuation: every clip is an independent sample, and clip boundaries are
+  hard cuts in both picture and sound. Only text-to-audio-video was
+  distilled (the base model's first/last-frame and reference conditioning
+  were not).
+- **One packed sequence, video + audio + text.** The H3-Omni-Transformer is a
+  33B dense single-stream DiT over a packed multimodal sequence with 3D
+  RoPE; audio is generated jointly (native stereo, decoded by a separate
+  audio VAE at 32 kHz), text conditioning comes from the full Qwen3-VL-32B
+  (~63 GB per rank, hidden states of layer 50). The distill is
+  guidance-free: `guidance_scale=1.0`, empty negative prompt, no CFG pass.
+  `num_inference_steps=5` counts sigma-grid POINTS (t=999,749,500,250→0) —
+  five points, exactly four forwards; the checkpoint supports nothing else.
+- **Clip geometry is narrow** and encoded in `fasth3_clip_plan.py`, whose
+  constants are deliberately duplicated from FastVideo (importing theirs
+  drags in torch) with a drift test: 24 fps only; frame counts of the form
+  `17n + 5` (the causal video VAE consumes 17-frame chunks into 5 latents);
+  duration 5–15 s, which after alignment means **14 legal lengths, 124–345
+  frames (5.167–14.375 s)** — 15.0 s itself is unreachable because 360
+  frames aligns up to 362 and is then rejected; canvas short edge 768, area
+  ≤ 768×1344, sides multiples of 32. Four aspect choices are offered
+  (`16:9` → 1344×768, `1:1`, `9:16`, `4:3`).
+- **GPU count must divide H3's 56 attention heads** (1, 2, 4, 7, 8, …).
+  Six GPUs is not a configuration; the engine refuses at init. Four B200s is
+  FastVideo's tested default and what this deployment runs; the count only
+  moves the enqueue-to-ready wait, since playback is explicit.
+
+## 2. How the Reactor Runtime serves it
+
+The [Reactor Runtime](https://github.com/reactor-team/reactor-runtime) is the
+open-source authoring layer; docs at
+[docs.reactor.inc/deploy](https://docs.reactor.inc/deploy). What matters here:
+
+- **`ReactorModel` with its own `run()` loop, not `ReactorPipeline`.** The
+  pipeline base is generator-driven — one `yield` per emitted chunk — which
+  suits frame-per-step models. fasth3's unit of work is a whole clip from
+  one blocking call, so it subclasses `ReactorModel`: the runtime runs the
+  model's `run()` concurrently with a command-dispatch loop and a lifecycle
+  loop, so `@event` handlers (commands) answer immediately even mid-build or
+  mid-play. Do not "normalize" this to the pipeline shape.
+- **Session state is the model's own.** No runtime-built `InputState`; plain
+  attributes reset in `_reset_session_state()`, called at `load()` and from
+  `@session_started` (not `@connected` — a client rejoining mid-session must
+  keep the session it joined). `self.connected` is an `asyncio.Event` held
+  while any client is attached; generation gates on it.
+- **Emission and pacing.** `await self.emit(Output(...))` hands frames to a
+  per-connection pacer; a chunk is tagged with a playout rate — measured
+  (`compute_time=`) or the class's declared `fps`. fasth3 **pins `fps = 24`
+  and never passes `compute_time`**: a measured rate wobbles and drifts
+  video against the sample-clocked audio. Emits go out in 3-frame slices
+  (the runtime recorder's feed queue cannot absorb bursts), paced by frames
+  on a monotonic clock that re-anchors rather than bursting after a stall.
+  `buffer_size = 48` gives 2 s of transport tolerance. `self.output.flush()`
+  drops queued media on every connection and cuts to black — used after
+  every clip and on `stop`/`reset`.
+- **Messages.** `self.send(msg)` broadcasts to every connection; a handler's
+  return value is the correlated reply to the caller only; returning nothing
+  yields a bodyless ack. **Refusals are broadcast, never raised**: handlers
+  emit a `command_error` message and return bodyless, because a raised
+  `CommandError`'s failure frame is withheld from older SDK generations.
+- **Sessions are multi-connection.** Broadcasts and media fan out to every
+  connection; a late joiner is greeted with `state_update` + `queue_update`
+  from the `@connected` hook. A local runtime hosts **one session**: a
+  second client must join with `connect(session_id=...)` — a plain
+  `connect()` gets HTTP 409 while a session streams.
+- **The schema is product surface.** Every `@event` / `InputField` /
+  `MessageField` description and `ModelMessage` docstring compiles into the
+  published OpenAPI schema (`python -m reactor_runtime.schema --path .`).
+  Describe only what a client observes on the wire; never kernels, caches,
+  config keys, or GPU counts.
+
+## 3. The client contract (what the queue is)
+
+Authoritative detail in [`fasth3/README.md`](../../fasth3/README.md) and
+`fasth3_types.py`; the shape in brief:
+
+- `enqueue(prompt, metadata, seed?, seconds?)` → immediate `clip_queued`
+  reply carrying the full **`ClipInfo`** struct: `clip_id` (UUID), `prompt`,
+  `metadata` (opaque, echoed untouched — the client's correlation channel),
+  `frames`, `seconds`, `seed`, `ready`. Omitted seed → the session's
+  advancing default (explicit seeds leave it untouched); omitted seconds →
+  the session default, snapped to the `17n+5` grid. Queue is bounded
+  (`inference.queue_size`, default 10); each built clip is ~1 GB of host
+  RAM.
+- Builds run oldest-first on their own, one at a time, also while a clip
+  plays. Readiness broadcasts on `queue_update` (always the whole queue).
+- `play` (oldest ready) / `play(clip_id)`; playing consumes the entry;
+  time-to-first-frame ~0.25 s since the clip is prebuilt. On finish: flush
+  to black, `clip_finished`, hold. `set_autoplay(true)` = standing play of
+  the oldest ready clip whenever nothing is playing (then `stop` acts as a
+  skip). `pop(clip_id)` evicts a queued clip to free its slot (an in-flight
+  build is discarded on completion). `stop` cuts playout in ~0.13 s;
+  `reset` drops everything and restores defaults. `set_clip_seconds`,
+  `set_seed`, `set_canvas` (locked while clips exist), `get_queue`,
+  `get_state` complete the surface; `state_update.valid_commands` tells a
+  client exactly what is legal right now (`fasth3_session_rules.py`).
+- Every clip-referencing message embeds the whole `ClipInfo`. On the wire it
+  travels as a plain mapping (the transport encoder accepts only
+  JSON-representable values); the `ClipInfo` dataclass in `fasth3_types.py`
+  is the schema-side declaration of that exact shape, and
+  `ClipEntry.snapshot()` in `fasth3_queue.py` is the single producer —
+  a test pins the two together.
+
+Design decisions worth knowing before "improving" things: playout deliberately
+never auto-advances without autoplay; the playing clip is not in the queue
+(pop-on-play), so `pop` cannot touch it and `stop` is the only cut; handlers
+return exactly their annotated message type or nothing; `state_update` is one
+complete snapshot built in one place so `get_state`, the connect greeting and
+the broadcast can never disagree; audio is downmixed to mono int16 48 kHz in
+the backend because the transport downmixes anyway and stereo would corrupt
+runtime recordings.
+
+## 4. The performance profile — every piece is load-bearing
+
+Measured end state on four B200s: **14.4 s per 14.375 s clip (1.0x
+realtime), flat across prompts and lengths**; conditioning ~1 s, decode
+~2.5 s, the rest denoise. Each element below was established by measurement,
+and removing any one of them regresses badly:
+
+1. **The sm100a VSA kernel is compiled from source at image build** (pinned
+   git commit in `requirements.txt`, `TORCH_CUDA_ARCH_LIST=10.0a` in
+   `build_env`). The published fastvideo-kernel wheel's sm_100a binary fails
+   every launch on driver 595 with `invalid argument`; the identical source
+   built by the image's CUDA 13.1 nvcc is correct. The PyPI sdist lacks its
+   CUTLASS/ThunderKittens submodules, so the git tree is the only workable
+   source. The `triton` VSA route is the portable fallback at ~2.5x the
+   build time.
+2. **Prompts are padded to exactly 256 tokens** (`PROMPT_TOKENS`,
+   `fasth3_backend.py`) with the bundle's own tokenizer and a filler
+   calibrated to cost exactly one token. Regional torch.compile keys its
+   capture on the packed sequence length, prompt tokens included; unpadded,
+   every novel prompt length recompiled (~23 s per clip). The client-facing
+   prompt stays the original text.
+3. **Every legal clip length is warmed at load** (`inference.warmup_lengths:
+   "all"` — 14 throwaway builds, several minutes of boot) so a feed of
+   arbitrary `seconds` values never pays the ~20 s first-build compile
+   stall mid-session.
+4. **Dynamo's recompile limit is raised in every container interpreter** by
+   `fasth3/sitecustomize.py` (reached via `PYTHONPATH=/app` in
+   `runtime_env`; `FASTH3_DYNAMO_RECOMPILE_LIMIT`, default 64). The default
+   limit of 8, combined with the fullgraph regional-compile route, was a
+   hard crash of the engine workers once enough distinct lengths had been
+   enqueued — and the limit cannot be set via torch env vars in torch 2.12,
+   nor from the parent process: the spawned workers import their own torch,
+   and FastVideo's own imports re-cap it, hence the import hook.
+5. **Replicated DiT + text encoder offloaded to pinned host memory**
+   (`replicated_dit: true`, `offload_text_encoder: true`,
+   `pin_cpu_memory: true`). FSDP sharding halves per-GPU weights but roughly
+   doubled the denoise; the offloaded Qwen3-VL costs ~63 GB of pinned host
+   RAM per rank and ~1 s page-in per clip (unpinned: ~15 s).
+   `resources.memory` is sized for four host copies plus the built-clip
+   buffer.
+6. **flash-attn-4 coexists with the runtime via a resolver override.** The
+   runtime needs `protobuf>=7.35.1` (its generated bindings hard-reject an
+   older runtime); FA4's pinned `nvidia-cutlass-dsl` caps protobuf `<7` — a
+   stale cap, since protobuf accepts old gencode on a newer runtime.
+   `build_env` sets `UV_OVERRIDE=/app/requirements.txt`, feeding the
+   requirements back as overrides so the higher floor wins. Because
+   overrides also strip torch coupling, torchvision (0.27.x) and torchaudio
+   (2.11.0; only `functional.resample` is used — pure torch ops) are pinned
+   to torch-2.12-matched builds explicitly.
+
+The number to watch is the per-clip log line —
+`clip built: 345f (14.38s content) in 14.4s = 1.00x realtime on 4 gpus,
+stages={...}` — figures live in the message text because the runtime's log
+formatter drops structured extras.
+
+## 5. Running it
+
+Weights: one Hugging Face snapshot (~148 GB), components directly under the
+weights root (`runtime.weights_path` in `reactor.yaml`;
+`checkpoint_dir: "."`). `load()` validates every component directory up
+front. Nothing downloads at load (`HF_HUB_OFFLINE=1`).
+
+**With the [reactor CLI](https://docs.reactor.inc/deploy)** (from `fasth3/`):
+
+```sh
+reactor build --no-dockerfile       # image from reactor.yaml's build: block
+reactor run --gpus '"device=0,1,2,3"' --port 8080
+```
+
+Caveat: the engine workers hand decoded frames back over torch shared
+memory, and warm-up never exercises that path — docker's default 64 MB
+`/dev/shm` kills the first real clip. `reactor run` has no shm flag today,
+so for real serving use the documented docker equivalent:
+
+```sh
+W=~/.cache/reactor_registry/fasth3
+docker run --rm -d --name fasth3 --shm-size=32g --gpus '"device=0,1,2,3"' \
+  -p 8080:8080 -v "$W:$W" -e REACTOR_WEIGHTS_PATH="$W" -e PORT=8080 \
+  reactor-local/fasth3:dev run --port 8080
+```
+
+Load takes minutes (weights + warm-up builds; watch `docker logs -f fasth3`
+for `session ready`). Pick GPUs with ~90 GB free each on the current
+profile. CPU-only checks need no GPU:
+
+```sh
+python -m reactor_runtime.schema --path . --out /tmp/schema.json
+PYTHONPATH=. python -m pytest tests/ -q
+```
+
+**Connecting** with the public Python SDK
+([`reactor-sdk`](https://pypi.org/project/reactor-sdk/) on PyPI):
+
+```python
+from reactor_sdk import Reactor
+reactor = Reactor("fasth3", local=True)                                # :8080
+reactor = Reactor("fasth3", local=True, api_url="http://localhost:8082")  # custom port
+await reactor.connect()                       # second client: connect(session_id=...)
+```
+
+`fasth3/client/client.py` is the reference walkthrough — it exercises the
+whole contract and writes received .mp4s, the message log, and a timing
+report; use it as the smoke test after any serving change.
+
+## 6. Keeping this skill true
+
+This file is the context handoff between agents. When work on `fasth3/`
+changes the contract, the profile, the serving mechanics, or resolves an
+open item, update this skill **in the same change** — a stale skill poisons
+the next session's assumptions. The same rule AGENTS.md applies to itself.
