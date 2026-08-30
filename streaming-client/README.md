@@ -216,9 +216,10 @@ thin translucent plates):
   group it reads `COMING UP scene 3/3` instead of repeating the title);
 - **top-left, while idle**: `UP NEXT <title> · by <author>` — or, with an
   empty queue, an invitation to type the chat command;
-- **top-right**: `QUEUE n` — everything queued, building and built alike
-  (a separate "ready" count just sits at zero whenever builds are the
-  bottleneck: built clips play the moment they land).
+- **top-right**: `READY n · BUILDING m` — the playout queue (built, playable
+  now) and the generation queue, separately. READY pinned at 0 while
+  BUILDING holds a backlog is the signature of builds running slower than
+  playback — the on-stream diagnostic for deployment speed.
 
 Everything it shows is reconstructed from the wire — the metadata group tags
 (title, author, scene numbering) and the link's queue mirror — so it survives

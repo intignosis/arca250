@@ -119,11 +119,13 @@ class StreamStatusOverlay(Overlay):
             primary = f'type "{self._chat_command} <your idea>" in chat'
             secondary = None
 
-        # One number a viewer can follow: everything queued, building and
-        # built alike. Built clips play the moment they land whenever builds
-        # are the bottleneck, so a "ready" count just sits at zero.
+        # The two stages, separately: READY is the playout queue (built,
+        # playable now) and BUILDING the generation queue. READY pinned at 0
+        # while BUILDING holds a backlog is the signature of builds running
+        # slower than playback — the number that diagnoses the deployment.
         badge = (
-            f"QUEUE {self._link.generation_queued + self._link.playout_queued}"
+            f"READY {self._link.playout_queued}"
+            f" · BUILDING {self._link.generation_queued}"
         )
 
         out = frame.copy()
