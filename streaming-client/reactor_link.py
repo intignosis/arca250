@@ -103,6 +103,11 @@ class ReactorLink:
         """(width, height) the deployment generates at."""
         return int(self.state["width"]), int(self.state["height"])
 
+    @property
+    def connected(self) -> bool:
+        """Whether a session is live right now (commands would go through)."""
+        return self._ready.is_set()
+
     async def wait_first_state(self) -> None:
         """Resolve once the first session delivered its `state_update`."""
         await self._first_state.wait()

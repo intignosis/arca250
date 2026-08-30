@@ -1,23 +1,34 @@
 """The director: viewer prompts in, tagged scene groups on the model's queue.
 
 One prompt from chat becomes one *scene group*: the upsampler expands it into
-1..N self-contained scenes, and the director enqueues them back-to-back on the
-fasth3 queue. Sequential playback needs no orchestration beyond that —
-fasth3's queue is strict FIFO, builds run oldest-first, and autoplay plays the
-oldest ready clip — so keeping a group's scenes contiguous *in the queue* is
-what keeps them contiguous *on the stream*. Two rules protect that:
+1..N self-contained scenes — a single shot, or a chunked short story of short
+clips — and the director enqueues them back-to-back on the fasth3 queue.
+Sequential playback needs no orchestration beyond that — fasth3's queue is
+strict FIFO, builds run oldest-first, and autoplay plays the oldest ready
+clip — so keeping a group's scenes contiguous *in the queue* is what keeps
+them contiguous *on the stream*. Three rules protect that:
 
-  * The director is the queue's only writer, and enqueues one group at a
-    time, so groups can never interleave.
+  * The director is the queue's only writer. Both writers inside it — the
+    viewer worker (`run`) and the idle filler (`run_idle`) — serialize group
+    enqueues through one lock, so groups can never interleave.
   * A group is only enqueued once the whole group fits in the remaining
     queue capacity, so it cannot get stuck half-in (with the model refusing
     the rest) while another group's turn comes up.
+  * Viewer prompts outrank filler: a viewer group evicts filler clips
+    (`pop`) when it needs their slots, and the filler stands down whenever
+    viewer work is pending.
 
 Every scene carries the group's identity in the clip's `metadata` — an opaque
 string fasth3 stores and echoes back on every message that references the
 clip. That is what lets this client (or any overlay built on it) reconstruct
 "scene 2/3 of *Neon Alley* by viewer_42" from a `clip_started` alone, without
-joining ids against local state that a reconnect may have lost.
+joining ids against local state that a reconnect may have lost. The same tag
+carries `generated: true` on filler clips, which is what makes them
+recognizably evictable later — including by a director restarted with no
+memory of enqueueing them.
+
+Viewer prompts pass moderation before they reach the upsampler; the curated
+idle list does not need it (see `moderator.py` for the policy).
 """
 
 from __future__ import annotations
@@ -25,9 +36,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
+from collections.abc import Sequence
 
 from chat import ChatPrompt
+from moderator import Moderator
 from reactor_link import ReactorLink
 from upsampler import PromptUpsampler, SceneGroup
 
@@ -43,6 +57,9 @@ _PENDING_LIMIT = 24
 _RETRY_DELAY_S = 3.0
 _CAPACITY_POLL_S = 1.0
 
+# How often the idle filler re-checks whether the queue wants topping up.
+_IDLE_POLL_S = 3.0
+
 
 class Director:
     """Consume chat prompts; keep the fasth3 queue fed with scene groups."""
@@ -51,13 +68,22 @@ class Director:
         self,
         link: ReactorLink,
         upsampler: PromptUpsampler,
+        moderator: Moderator,
         cooldown_s: float,
+        idle_prompts: Sequence[str] = (),
+        idle_queue_target: int = 0,
     ) -> None:
         self._link = link
         self._upsampler = upsampler
+        self._moderator = moderator
         self._cooldown_s = cooldown_s
+        self._idle_prompts = list(idle_prompts)
+        random.shuffle(self._idle_prompts)
+        self._idle_index = 0
+        self._idle_target = idle_queue_target
         self._pending: asyncio.Queue[ChatPrompt] = asyncio.Queue(_PENDING_LIMIT)
         self._last_accepted: dict[str, float] = {}  # author -> monotonic
+        self._enqueue_lock = asyncio.Lock()
         link.add_listener(self._on_model_message)
 
     # -------------------------------------------------------- chat intake
@@ -86,13 +112,20 @@ class Director:
             prompt.author, prompt.source, prompt.text,
         )
 
-    # --------------------------------------------------------- main loop
+    # ------------------------------------------------- viewer prompt loop
 
     async def run(self) -> None:
-        """Upsample and enqueue pending prompts, one group at a time, forever."""
+        """Moderate, upsample, and enqueue pending prompts, one group at a time."""
         while True:
             prompt = await self._pending.get()
             try:
+                verdict = await self._moderator.review(prompt.text)
+                if verdict is not None:
+                    logger.warning(
+                        "[director] rejected prompt from %s@%s (%s): %s",
+                        prompt.author, prompt.source, verdict, prompt.text,
+                    )
+                    continue
                 group = await self._upsampler.upsample(
                     raw_prompt=prompt.text,
                     author=prompt.author,
@@ -109,51 +142,138 @@ class Director:
                     prompt.author, error,
                 )
 
+    # -------------------------------------------------------- idle filler
+
+    async def run_idle(self) -> None:
+        """Keep the queue topped up with generated clips while chat is quiet.
+
+        One clip per group, on purpose: single-scene fillers are the finest
+        eviction granularity, and popping one never truncates a story.
+        """
+        if not self._idle_prompts or self._idle_target <= 0:
+            logger.info("[director] idle filler disabled (no prompts or target 0)")
+            return
+        logger.info(
+            "[director] idle filler: %d prompts, queue target %d",
+            len(self._idle_prompts), self._idle_target,
+        )
+        while True:
+            await asyncio.sleep(_IDLE_POLL_S)
+            if (
+                not self._pending.empty()
+                or not self._link.connected
+                or self._link.queued >= self._idle_target
+            ):
+                continue
+            text = self._idle_prompts[self._idle_index % len(self._idle_prompts)]
+            self._idle_index += 1
+            try:
+                group = await self._upsampler.upsample(
+                    raw_prompt=text,
+                    author="auto",
+                    source="idle",
+                    min_seconds=self._link.min_seconds,
+                    max_seconds=self._link.max_seconds,
+                    generated=True,
+                    max_chunks=1,
+                )
+                # A viewer prompt that arrived while the LLM ran outranks the
+                # filler; drop this group rather than making the viewer wait.
+                if self._pending.empty():
+                    await self._enqueue_group(group)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.error("[director] idle fill failed: %s", error)
+
+    # ---------------------------------------------------------- enqueueing
+
     async def _enqueue_group(self, group: SceneGroup) -> None:
         scene_count = len(group.scenes)
-        # Hold until the whole group fits, so its scenes land contiguously.
-        while self._link.queue_capacity - self._link.queued < scene_count:
-            await asyncio.sleep(_CAPACITY_POLL_S)
-
-        for index, scene in enumerate(group.scenes, start=1):
-            metadata = json.dumps(
-                {
-                    "group_id": group.group_id,
-                    "title": group.title[:120],
-                    "scene": index,
-                    "scenes": scene_count,
-                    "author": group.author,
-                    "source": group.source,
-                    # Truncated so the whole blob stays well under fasth3's
-                    # 2000-char metadata cap.
-                    "raw_prompt": group.raw_prompt[:400],
-                },
-                ensure_ascii=False,
-            )
+        async with self._enqueue_lock:
+            # Hold until the whole group fits, so its scenes land contiguously.
+            # Viewer groups may take filler slots; filler never evicts anything
+            # and simply keeps waiting (in practice it never has to: run_idle
+            # only fills below the target, which sits under the capacity).
             while True:
-                reply = await self._link.send_command(
-                    "enqueue",
-                    {
-                        "prompt": scene.prompt,
-                        "metadata": metadata,
-                        "seconds": scene.seconds,
-                    },
-                )
-                if isinstance(reply, dict) and "clip" in reply:
-                    clip = reply["clip"]
-                    logger.info(
-                        "[director] queued %s scene %d/%d as %s (%.1fs, seed %s)",
-                        group.group_id, index, scene_count,
-                        clip["clip_id"][:8], clip["seconds"], clip["seed"],
-                    )
+                free = self._link.queue_capacity - self._link.queued
+                if free >= scene_count:
                     break
-                # Bodyless reply = refused (command_error was logged by the
-                # link) or the session dropped mid-command; wait and retry.
-                logger.warning(
-                    "[director] enqueue of %s scene %d/%d refused; retrying in %.0fs",
-                    group.group_id, index, scene_count, _RETRY_DELAY_S,
+                if not group.generated:
+                    popped = await self._evict_fillers(scene_count - free)
+                    if popped:
+                        # Give the pops' queue_update a moment to land.
+                        await asyncio.sleep(0.2)
+                        continue
+                await asyncio.sleep(_CAPACITY_POLL_S)
+
+            for index, scene in enumerate(group.scenes, start=1):
+                metadata = json.dumps(
+                    {
+                        "group_id": group.group_id,
+                        "title": group.title[:120],
+                        "scene": index,
+                        "scenes": scene_count,
+                        "author": group.author,
+                        "source": group.source,
+                        "generated": group.generated,
+                        # Truncated so the whole blob stays well under fasth3's
+                        # 2000-char metadata cap.
+                        "raw_prompt": group.raw_prompt[:400],
+                    },
+                    ensure_ascii=False,
                 )
-                await asyncio.sleep(_RETRY_DELAY_S)
+                while True:
+                    reply = await self._link.send_command(
+                        "enqueue",
+                        {
+                            "prompt": scene.prompt,
+                            "metadata": metadata,
+                            "seconds": scene.seconds,
+                        },
+                    )
+                    if isinstance(reply, dict) and "clip" in reply:
+                        clip = reply["clip"]
+                        logger.info(
+                            "[director] queued %s scene %d/%d as %s (%.1fs, seed %s)%s",
+                            group.group_id, index, scene_count,
+                            clip["clip_id"][:8], clip["seconds"], clip["seed"],
+                            " [auto]" if group.generated else "",
+                        )
+                        break
+                    # Bodyless reply = refused (command_error was logged by the
+                    # link) or the session dropped mid-command; wait and retry.
+                    logger.warning(
+                        "[director] enqueue of %s scene %d/%d refused; retrying in %.0fs",
+                        group.group_id, index, scene_count, _RETRY_DELAY_S,
+                    )
+                    await asyncio.sleep(_RETRY_DELAY_S)
+
+    async def _evict_fillers(self, needed: int) -> int:
+        """Pop up to `needed` generated clips to make room for a viewer group.
+
+        Newest-queued first, so the filler closest to playing (and likeliest
+        already built) survives and the stream stays fed. Only clips tagged
+        `generated: true` are candidates; the playing clip is not in the
+        queue, so it can never be popped. Returns how many pops succeeded.
+        """
+        popped = 0
+        for clip in reversed(self._link.queue_clips):
+            if popped >= needed:
+                break
+            tag = _parse_group_tag(clip.get("metadata", ""))
+            if not tag or not tag.get("generated"):
+                continue
+            reply = await self._link.send_command(
+                "pop", {"clip_id": clip["clip_id"]}
+            )
+            if isinstance(reply, dict) and "clip" in reply:
+                popped += 1
+                logger.info(
+                    "[director] evicted filler %s ('%s') for a viewer group",
+                    clip["clip_id"][:8], tag.get("title", "?"),
+                )
+        return popped
 
     # ----------------------------------------------------- announcements
 
@@ -166,6 +286,7 @@ class Director:
         label = (
             f"'{tag['title']}' scene {tag['scene']}/{tag['scenes']} "
             f"(by {tag['author']}@{tag['source']})"
+            + (" [auto]" if tag.get("generated") else "")
             if tag
             else f"clip {clip.get('clip_id', '?')[:8]}"
         )

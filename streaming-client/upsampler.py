@@ -1,9 +1,11 @@
 """Prompt upsampling: turn a viewer's rough idea into fasth3-ready scenes.
 
-One LLM call per chat prompt, against any OpenAI-compatible endpoint. The
-model decides how many scenes the idea needs (1 up to `max_scenes`), writes
-each scene as a self-contained text-to-video prompt in the configured
-style/character, and picks each scene's length in seconds.
+One LLM call per prompt, against any OpenAI-compatible endpoint. The model
+picks the shape the idea calls for — one scene of any legal length, or a
+chunked short story of up to `max_chunks` short clips with a setup,
+development, and payoff — writes each scene as a self-contained
+text-to-video prompt in the configured style/character, and picks each
+scene's length in seconds.
 
 Why the prompt is written the way it is — these rules come from how fasth3
 actually behaves, so keep them intact when editing:
@@ -69,13 +71,7 @@ HOW THE VIDEO MODEL WORKS (hard constraints):
 - Describe only what the camera sees and the microphone hears: no text
   overlays, no UI, no scene numbers, no camera jargon the model cannot show.
 
-HOW MANY SCENES:
-- Default to 1 scene. Use 2-{max_scenes} only when the idea clearly asks for
-  progression — a journey, a transformation, a before-and-after. Never more
-  than {max_scenes}.
-- Consecutive scenes play back-to-back as one sequence. Make them feel
-  continuous: repeat the shared setting and subjects verbatim enough that
-  they read as the same place, and change only what the story moves.
+{scene_count_rules}
 
 WRITING THE SCENE PROMPTS:
 - Be concrete and visual: subject, action, setting, camera angle and motion,
@@ -90,6 +86,26 @@ Reply with ONLY this JSON, nothing else:
   "scenes": [{{"prompt": "self-contained scene description...", "seconds": 8.0}}]}}
 """
 
+_MULTI_SCENE_RULES = """\
+HOW MANY SCENES — two shapes; pick whichever the idea calls for:
+- ONE SCENE: a single scene with its length chosen freely in range. Right
+  for a mood, a place, a single action or gag. When in doubt, choose this.
+- CHUNKED SHORT STORY: 3 to {max_chunks} short chunks — each near the short
+  end, roughly {min_seconds}-8 s — that read as one story with a setup, a
+  development, and a payoff. Choose this when the idea implies narrative:
+  a journey, a transformation, a chase, a day-in-the-life, a punchline
+  that needs building up. Two scenes work for a simple before-and-after.
+- Never more than {max_chunks} scenes. Do not pad a thin idea into many
+  chunks; a story earns its chunks or it is one scene.
+- Consecutive scenes play back-to-back as one sequence. Make them feel
+  continuous: repeat the shared setting and subjects verbatim enough that
+  they read as the same place, and change only what the story moves."""
+
+_SINGLE_SCENE_RULES = """\
+HOW MANY SCENES:
+- Exactly one scene, with its length chosen freely in range. Distill the
+  idea into a single, complete shot."""
+
 
 @dataclass(frozen=True)
 class Scene:
@@ -101,7 +117,12 @@ class Scene:
 
 @dataclass(frozen=True)
 class SceneGroup:
-    """The scenes one chat prompt expanded into, played back-to-back."""
+    """The scenes one prompt expanded into, played back-to-back.
+
+    ``generated`` marks filler groups made from the idle prompt list rather
+    than a viewer request; the director may evict their clips from the
+    model's queue to make room for viewer groups.
+    """
 
     group_id: str
     title: str
@@ -109,6 +130,7 @@ class SceneGroup:
     source: str
     raw_prompt: str
     scenes: list[Scene]
+    generated: bool = False
 
 
 class PromptUpsampler:
@@ -119,13 +141,13 @@ class PromptUpsampler:
         api_key: str,
         model: str,
         style: str,
-        max_scenes: int,
+        max_chunks: int,
         base_url: str | None = None,
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         self._style = style.strip() or "Cinematic, photoreal, rich natural light."
-        self._max_scenes = max_scenes
+        self._max_chunks = max_chunks
 
     async def upsample(
         self,
@@ -134,20 +156,32 @@ class PromptUpsampler:
         source: str,
         min_seconds: float,
         max_seconds: float,
+        generated: bool = False,
+        max_chunks: int | None = None,
     ) -> SceneGroup:
         """One idea in, one validated scene group out. Never raises.
 
         `min_seconds`/`max_seconds` are the live bounds from the model's
         `state_update`, so the LLM always chooses within what the deployment
-        actually accepts. On any LLM failure the raw prompt (styled, truncated)
+        actually accepts. `max_chunks` caps this call below the configured
+        ceiling (the idle filler passes 1 so its groups stay one-clip and
+        evictable). On any LLM failure the raw prompt (styled, truncated)
         becomes a single scene — the stream keeps moving.
         """
+        chunk_cap = min(max_chunks or self._max_chunks, self._max_chunks)
+        scene_count_rules = (
+            _MULTI_SCENE_RULES.format(
+                max_chunks=chunk_cap, min_seconds=f"{min_seconds:g}"
+            )
+            if chunk_cap > 1
+            else _SINGLE_SCENE_RULES
+        )
         system = _SYSTEM_PROMPT.format(
             style=self._style,
             target_chars=_TARGET_PROMPT_CHARS,
             min_seconds=f"{min_seconds:g}",
             max_seconds=f"{max_seconds:g}",
-            max_scenes=self._max_scenes,
+            scene_count_rules=scene_count_rules,
         )
         group_id = uuid.uuid4().hex[:12]
         try:
@@ -164,7 +198,7 @@ class PromptUpsampler:
             data = json.loads(response.choices[0].message.content or "{}")
             title = str(data.get("title") or raw_prompt[:60]).strip()
             scenes = self._validate_scenes(
-                data.get("scenes", []), min_seconds, max_seconds
+                data.get("scenes", []), chunk_cap, min_seconds, max_seconds
             )
             if not scenes:
                 raise ValueError("no usable scenes in the reply")
@@ -185,6 +219,7 @@ class PromptUpsampler:
             source=source,
             raw_prompt=raw_prompt,
             scenes=scenes,
+            generated=generated,
         )
         for index, scene in enumerate(group.scenes, start=1):
             logger.info(
@@ -194,11 +229,11 @@ class PromptUpsampler:
         return group
 
     def _validate_scenes(
-        self, raw_scenes: list, min_seconds: float, max_seconds: float
+        self, raw_scenes: list, chunk_cap: int, min_seconds: float, max_seconds: float
     ) -> list[Scene]:
         """Enforce every constraint the LLM was asked for; trust nothing."""
         scenes: list[Scene] = []
-        for raw in raw_scenes[: self._max_scenes]:
+        for raw in raw_scenes[:chunk_cap]:
             if not isinstance(raw, dict):
                 continue
             prompt = _sanitize(str(raw.get("prompt", "")))

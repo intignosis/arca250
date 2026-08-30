@@ -30,6 +30,7 @@ import warnings
 from chat import ChatSource, TwitchChat, YouTubeChat
 from config import Config
 from director import Director
+from moderator import Moderator
 from pacer import Pacer
 from reactor_link import MODEL_FPS, MODEL_SAMPLE_RATE, ReactorLink
 from sinks import AudioFormat, VideoFormat, make_sink
@@ -73,10 +74,28 @@ async def main() -> None:
         api_key=config.openai_api_key,
         model=config.openai_model,
         style=config.style,
-        max_scenes=config.max_scenes,
+        max_chunks=config.max_chunks,
         base_url=config.openai_base_url,
     )
-    director = Director(link, upsampler, cooldown_s=config.chat_cooldown_s)
+    moderator = Moderator(
+        api_key=config.moderation_api_key,
+        model=config.moderation_model,
+        enabled=config.moderation_enabled,
+        base_url=config.moderation_base_url,
+    )
+    if not moderator.enabled:
+        logger.warning(
+            "moderation is DISABLED (MODERATION_ENABLED=0) — every chat "
+            "prompt reaches the upsampler unchecked"
+        )
+    director = Director(
+        link,
+        upsampler,
+        moderator,
+        cooldown_s=config.chat_cooldown_s,
+        idle_prompts=config.idle_prompts,
+        idle_queue_target=config.idle_queue_target,
+    )
     chat_sources = build_chat_sources(config)
     if not chat_sources:
         logger.warning(
@@ -93,6 +112,12 @@ async def main() -> None:
         asyncio.create_task(link.run(), name="reactor-link"),
         asyncio.create_task(director.run(), name="director"),
     ]
+    # Gated here because main treats any finished task as a shutdown signal,
+    # and run_idle returns immediately when the filler is configured off.
+    if config.idle_prompts and config.idle_queue_target > 0:
+        tasks.append(asyncio.create_task(director.run_idle(), name="idle-filler"))
+    else:
+        logger.info("idle filler off (no prompts file or IDLE_QUEUE_TARGET=0)")
     tasks += [
         asyncio.create_task(source.run(director.submit), name=f"chat-{source.name}")
         for source in chat_sources

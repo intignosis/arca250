@@ -1,12 +1,14 @@
 # fasth3 streaming client
 
 A chat-driven livestream client for the fasth3 clip-queue model. It reads
-`!prompt` requests from Twitch and/or YouTube chat, upsamples each one into a
-styled sequence of one or more video scenes with an LLM, enqueues those scenes
-on a served fasth3 model (local `reactor run` or hosted with an API key), and
-forwards the model's video+audio output as one uninterrupted broadcast to a
-pluggable **sink** — RTMP (Twitch / YouTube Live / Kick) today, a no-op sink
-for dry runs, and an interface designed for LiveKit / SFU sinks tomorrow.
+`!prompt` requests from Twitch and/or YouTube chat, moderates them, upsamples
+each one into a styled sequence of one or more video scenes with an LLM,
+enqueues those scenes on a served fasth3 model (local `reactor run` or hosted
+with an API key), and forwards the model's video+audio output as one
+uninterrupted broadcast to a pluggable **sink** — RTMP (Twitch / YouTube
+Live / Kick) today, a no-op sink for dry runs, and an interface designed for
+LiveKit / SFU sinks tomorrow. While chat is quiet, an **idle filler** keeps
+the queue topped up from a curated prompt list so the stream never runs dry.
 
 Built on `reactor-sdk >= 1.1.1` (the current SDK surface: `reactor.on(...)`,
 `reactor.tracks...one()`, `track.on_frame`). The pre-1.0 examples in the
@@ -18,8 +20,10 @@ learnings are already baked into `sinks/rtmp.py`.
 
 ```
 Twitch IRC ─┐
-            ├─▶ Director ──▶ PromptUpsampler (OpenAI-compatible LLM)
-YouTube API ┘      │
+            ├─▶ Director ──▶ Moderator (OpenAI moderations API)
+YouTube API ┘      │   └───▶ PromptUpsampler (OpenAI-compatible LLM)
+                   │              ▲
+idle_prompts.txt ──┘ (filler)     │
                    ▼  enqueue: scene groups, tagged via clip metadata
               ReactorLink ◀──▶ fasth3 (clip queue, autoplay on)
                    │  24 fps video + 48 kHz audio (per clip, black between)
@@ -35,8 +39,10 @@ YouTube API ┘      │
 | `main.py` | Wiring and task lifecycle; nothing else. |
 | `config.py` | The only reader of `.env` / environment / CLI. |
 | `reactor_link.py` | Everything that touches `reactor_sdk`: connect/reconnect loop, media → pacer, `state_update`/`queue_update` mirror, command sending, message fan-out. |
-| `director.py` | Chat prompt → upsample → enqueue scene groups; per-author cooldown; now-playing narration from metadata. |
-| `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length clamp, scene-count cap). |
+| `director.py` | Chat prompt → moderate → upsample → enqueue scene groups; idle filler + eviction; per-author cooldown; now-playing narration from metadata. |
+| `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length clamp, chunk-count cap). |
+| `moderator.py` | The moderations call and the fail-closed policy. |
+| `idle_prompts.txt` | The curated filler prompts, one per line. |
 | `pacer.py` | The 24 fps metronome between bursty/clip-shaped model output and the sink's need for a frame + audio every period, forever. |
 | `sinks/` | The output interface (`base.py`), ffmpeg RTMP (`rtmp.py`), no-op (`noop.py`), factory (`__init__.py`). |
 | `chat/` | The chat-source interface (`base.py`), anonymous Twitch IRC (`twitch.py`), YouTube Data API poller (`youtube.py`). |
@@ -57,23 +63,29 @@ oldest ready clip plays on its own whenever nothing is playing, streaming on
 
 ## Scene groups
 
-One chat prompt becomes one **scene group**: the upsampler decides how many
-scenes (1–`MAX_SCENES`) the idea needs and each scene's length; the director
-enqueues them back-to-back. Sequential playback of a group needs no extra
-orchestration — it falls out of three facts, and breaks if any is violated:
+One chat prompt becomes one **scene group**. The upsampler picks the shape
+the idea calls for: a **single scene** of any legal length, or a **chunked
+short story** — up to `MAX_CHUNKS` short clips (each near the model's
+minimum length) that read as one story with a setup, development, and
+payoff. The director enqueues the group back-to-back. Sequential playback
+needs no extra orchestration — it falls out of three facts, and breaks if
+any is violated:
 
 1. fasth3's queue is strict FIFO and autoplay plays the oldest ready clip, so
    **enqueue order is play order**.
-2. The director is the **only writer** to the queue and enqueues one group at
-   a time, so groups never interleave.
+2. The director is the **only writer** to the queue — both its viewer worker
+   and its idle filler serialize group enqueues through one lock — so groups
+   never interleave.
 3. A group is enqueued only once **all** its scenes fit in the remaining
-   capacity, so it can't wedge half-in.
+   capacity, so it can't wedge half-in. Viewer groups may make that room by
+   evicting filler clips (see "Idle filler" below).
 
 Each scene's `metadata` carries the group tag as JSON:
 
 ```json
 {"group_id": "9f2c4e81a0b3", "title": "Neon Alley", "scene": 2, "scenes": 3,
- "author": "viewer_42", "source": "twitch", "raw_prompt": "a neon alley..."}
+ "author": "viewer_42", "source": "twitch", "generated": false,
+ "raw_prompt": "a neon alley..."}
 ```
 
 The model never reads metadata; it echoes it back on `clip_queued`,
@@ -101,6 +113,47 @@ editing (rationale in the module docstring):
 
 Any LLM failure degrades to a single scene made of style + the raw prompt —
 the stream never stalls on the upsampler.
+
+## Moderation
+
+Viewer prompts pass the OpenAI moderations API (`moderator.py`) **before**
+they reach the upsampler. Moderation deliberately has its own endpoint and
+key (`MODERATION_API_KEY` / `MODERATION_BASE_URL`, falling back to the
+`OPENAI_*` values): inference gateways often do not expose `/moderations` —
+Reactor's corp gateway answers it with `provider_not_allowed` — so moderation
+typically points at api.openai.com while upsampling goes through a gateway.
+
+The policy is **fail closed**: a prompt that cannot be checked is rejected,
+so a broken moderation endpoint never silently turns moderation off. To run
+without moderation, set `MODERATION_ENABLED=0` explicitly — main.py then
+warns at startup. Only the raw viewer prompt is checked: the upsampled scenes
+are the LLM's own writing under a system prompt that reinterprets hostile
+ideas, and the idle list is curated in this repo.
+
+## Idle filler
+
+When chat is quiet, the director's `run_idle` task keeps the model's queue
+topped up to `IDLE_QUEUE_TARGET` clips (default 6) from `idle_prompts.txt`
+(shuffled, then rotated; override with `IDLE_PROMPTS_FILE`). Filler prompts
+run through the same upsampler and style but are forced to **one scene per
+group** — the finest eviction granularity, and popping one never truncates a
+story — and their metadata carries `generated: true`.
+
+Viewers always outrank filler, in three ways:
+
+- the filler stands down whenever a viewer prompt is pending (including one
+  that arrived while the filler's LLM call was in flight — the group is
+  dropped before enqueueing);
+- when a viewer group doesn't fit the remaining capacity, the director
+  **evicts** filler clips with `pop` — newest-queued first, so the filler
+  closest to playing (likeliest already built) survives and the stream stays
+  fed. Only clips tagged `generated: true` are candidates; a playing clip is
+  not in the queue, so playback is never cut;
+- eviction recognizes fillers purely by the metadata echo, so it also works
+  after a client restart that has no memory of enqueueing them.
+
+The target (6) sits deliberately under the queue capacity (10): the gap is
+headroom a viewer group can take without any eviction at all.
 
 ## Sinks
 
@@ -157,7 +210,9 @@ python main.py --sink rtmp --rtmp-url rtmp://live.twitch.tv/app/STREAM_KEY
 Then type `!prompt a lighthouse in a storm` in chat. Expect: an upsampler log
 with the scenes, `queued ... scene 1/n` lines, and — after roughly the clip's
 own duration of build time per scene — `[now playing]` lines as autoplay runs
-the group. Between groups the stream holds on black; that is the model's
+the group. With the idle filler on (the default), `[auto]`-tagged clips fill
+the queue within the first minute and the stream shows content instead of
+black between viewer groups; with it off, black between groups is the model's
 contract, not a bug.
 
 ## Learnings baked into this client (do not re-learn these)
@@ -204,8 +259,10 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
 
 - **Invariants to preserve:** prompt ≤ 800 chars after sanitization; metadata
   JSON well under 2000 chars; scene groups enqueued contiguously and only
-  when they fully fit; autoplay re-enabled on every connect; pacer/sink never
-  torn down on reconnect; sinks never block the event loop.
+  when they fully fit; all enqueues (viewer and filler) serialized through
+  the director's one lock; eviction pops only `generated: true` clips;
+  moderation fails closed; autoplay re-enabled on every connect; pacer/sink
+  never torn down on reconnect; sinks never block the event loop.
 - `../fasth3/fasth3_types.py` is the wire contract. If the model's schema moves
   (new fields, renamed messages), update `reactor_link.py`'s mirror and the
   director's message handling together, and re-check this README's model

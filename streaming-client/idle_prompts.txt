@@ -1,0 +1,28 @@
+# Idle filler prompts — one per line, `#` lines are comments.
+#
+# These feed the queue when chat is quiet (see "Idle filler" in README.md).
+# They are deliberately subject-only: the upsampler applies the configured
+# STYLE on top, so keep entries about *what* is on screen, not how it looks.
+# Curated by humans; they bypass moderation — keep them clean.
+A lighthouse keeper lighting the lamp as a storm rolls in from the sea
+A fox trotting through fresh snow between silent pine trees at dawn
+A tram gliding through a rainy city at night, windows glowing warm
+A hot air balloon drifting over patchwork fields in early morning mist
+A street musician playing violin in an empty arcade after closing time
+A tide pool teeming with tiny creatures as waves wash gently over it
+A paper boat sailing down a rain gutter through a miniature adventure
+A lantern festival releasing hundreds of lights over a calm lake
+A baker pulling fresh bread from a stone oven before sunrise
+An old library at midnight, dust motes drifting through moonbeams
+A container ship passing impossibly close to a tiny fishing boat in fog
+A hummingbird visiting flowers in slow motion during golden hour
+A night train crossing a viaduct under the northern lights
+A cat exploring the rooftops of an old coastal town at sunset
+A desert caravan cresting a dune as a sandstorm gathers behind it
+A greenhouse in the rain, droplets racing down the glass above rows of ferns
+A blacksmith forging a blade, sparks blooming with every hammer strike
+A whale surfacing beside a kayaker on a glassy morning sea
+An astronaut tending a small garden inside an orbital station
+A market street waking up: shutters opening, crates unloading, kettles steaming
+A snowplow clearing a mountain pass at dawn, headlights cutting the blue dark
+A koi pond in autumn, red leaves landing between slow golden fish

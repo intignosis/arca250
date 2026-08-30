@@ -1,5 +1,14 @@
 # Agent instructions for infinite-livestream
 
+> **Keep this file current — it is the map, and it must not lag the code.**
+> When a change adds a component, an env var, a command, an invariant, or
+> moves behaviour any document describes, update that document **in the same
+> change**: this file for the system picture, invariants, and routing table;
+> `streaming-client/README.md` for client detail; the `base.py` docstrings
+> for interface contracts; `.env.example` for configuration. A stale map is
+> worse than none — the next agent trusts it and drifts. `CLAUDE.md` is a
+> symlink to this file; never let them diverge into two copies.
+
 This repo is a complete, working system: a chat-driven infinite AI video
 broadcast. `fasth3/` is the model — a queue of prompt-driven clip
 generations, served by the [Reactor Runtime](https://github.com/reactor-team/reactor-runtime)
@@ -31,14 +40,20 @@ records without local joins.
 The client is a straight pipeline:
 
 ```
-chat (Twitch IRC / YouTube API) → Director → PromptUpsampler (LLM)
+chat (Twitch IRC / YouTube API) → Director → Moderator → PromptUpsampler (LLM)
+  idle_prompts.txt (filler) ────↗
        → ReactorLink (enqueue, autoplay on) → fasth3
        → Pacer (constant-rate clock) → StreamSink (rtmp | noop | yours)
 ```
 
-One chat prompt becomes one **scene group**: 1–N self-contained scenes
-enqueued back-to-back, each tagged with a JSON group id in the clip metadata,
-played sequentially by autoplay. The **pacer** converts clip-shaped output
+One chat prompt becomes one **scene group**: a single scene, or a chunked
+short story of up to `MAX_CHUNKS` short clips — the upsampling LLM picks the
+shape — enqueued back-to-back, each clip tagged with a JSON group id in the
+metadata, played sequentially by autoplay. Viewer prompts pass the OpenAI
+moderations API first (own endpoint, fail-closed; see `moderator.py`). While
+chat is quiet, an idle filler tops the queue up to `IDLE_QUEUE_TARGET` with
+single-scene groups tagged `generated: true`; viewer groups evict those
+(`pop`) when they need the room. The **pacer** converts clip-shaped output
 (24 fps while playing, nothing between clips) into the frame-every-period
 stream RTMP requires, filling gaps with repeated frames and silence.
 
@@ -46,9 +61,11 @@ stream RTMP requires, filling gaps with repeated frames and silence.
 
 1. **Enqueue order is play order.** Group sequencing rests entirely on the
    queue being FIFO + autoplay playing oldest-ready, the Director being the
-   queue's only writer, and a group being enqueued only when all its scenes
-   fit the remaining capacity. No orchestration exists beyond this; do not
-   add any, and do not break any of the three legs.
+   queue's only writer (its viewer worker and idle filler serialize through
+   one lock), and a group being enqueued only when all its scenes fit the
+   remaining capacity — filler eviction (`pop` on `generated: true` clips
+   only) is how a viewer group makes that room. No orchestration exists
+   beyond this; do not add any, and do not break any of the three legs.
 2. **The pacer and sink survive Reactor reconnects; the queue does not.**
    Sink + pacer are created once and never torn down mid-run — that is what
    keeps the platform-side broadcast unbroken. Server-side session state
@@ -75,6 +92,8 @@ stream RTMP requires, filling gaps with repeated frames and silence.
 | Stream delivery (encoding, destinations) | `streaming-client/sinks/` | register in `make_sink`, `.env.example`, README sink table |
 | Prompt sources | `streaming-client/chat/` | `build_chat_sources` in `main.py`, `.env.example`, README |
 | Upsampling behaviour / the style prompt | `streaming-client/upsampler.py` | keep the constraint rules intact — the rationale is in the module docstring |
+| Moderation policy | `streaming-client/moderator.py` | keep it fail-closed; README's Moderation section |
+| Idle filler / eviction | `streaming-client/director.py` (`run_idle`, `_evict_fillers`) + `idle_prompts.txt` | README's Idle filler section |
 
 ## Model rules (`fasth3/`) — distilled from the Reactor cookbook
 
@@ -117,6 +136,23 @@ stream RTMP requires, filling gaps with repeated frames and silence.
 - Config comes only through `config.py` (env / `.env` / CLI). Never commit
   `.env` — it holds real API and stream keys; `.env.example` is the template.
   Never print keys; the RTMP sink redacts the stream key in logs.
+
+## Documentation: who owns what, and the self-maintenance rule
+
+Four documents, four scopes — edit the owner, never a copy, and edit it in
+the same change as the code it describes:
+
+| Document | Owns | Update when… |
+| --- | --- | --- |
+| `AGENTS.md` (this file; `CLAUDE.md` symlinks here) | System picture, load-bearing invariants, change routing, verification | any invariant, component, or workflow moves |
+| `streaming-client/README.md` | Client architecture, the ffmpeg/RTMP learnings, moderation & idle-filler behaviour, run instructions | client behaviour it describes moves |
+| `streaming-client/{sinks,chat}/base.py` docstrings | The sink and chat-source interface contracts | the contract itself changes (READMEs only summarize these) |
+| `streaming-client/.env.example` + `fasth3/README.md` | Every knob, with its default; the model's own story | a knob or model surface is added/renamed |
+
+A PR that changes behaviour without touching the document that describes it
+is incomplete — flag it in review, and as an agent, fix it before finishing
+the task. When you find the docs and the code disagreeing, the code is the
+truth; correct the document in the same change and say so.
 
 ## Verifying a change
 

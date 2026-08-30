@@ -20,6 +20,19 @@ def _flag(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _load_prompt_lines(path: Path, required: bool) -> tuple[str, ...]:
+    """Read one prompt per line, skipping blanks and `#` comments."""
+    if not path.is_file():
+        if required:
+            raise SystemExit(f"IDLE_PROMPTS_FILE not found: {path}")
+        return ()
+    return tuple(
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+
+
 @dataclass(frozen=True)
 class Config:
     """One immutable snapshot of everything the client is configured with."""
@@ -34,7 +47,19 @@ class Config:
     openai_base_url: str | None
     openai_model: str
     style: str
-    max_scenes: int
+    max_chunks: int
+
+    # Moderation (its own endpoint: the upsampling gateway may not expose
+    # /moderations, so this can point at api.openai.com while upsampling
+    # goes elsewhere)
+    moderation_enabled: bool
+    moderation_api_key: str
+    moderation_base_url: str | None
+    moderation_model: str
+
+    # Idle filler
+    idle_prompts: tuple[str, ...]
+    idle_queue_target: int
 
     # Sink
     sink: str  # "rtmp" | "noop"
@@ -74,15 +99,32 @@ class Config:
         if style_file:
             style = Path(style_file).read_text(encoding="utf-8").strip()
 
+        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        openai_base_url = os.environ.get("OPENAI_BASE_URL") or None
+
+        idle_file = os.environ.get("IDLE_PROMPTS_FILE", "").strip()
+        if idle_file:
+            idle_prompts = _load_prompt_lines(Path(idle_file), required=True)
+        else:
+            # The list shipped next to this file; absent means filler off.
+            default_file = Path(__file__).parent / "idle_prompts.txt"
+            idle_prompts = _load_prompt_lines(default_file, required=False)
+
         config = Config(
             model=args.model or os.environ.get("REACTOR_MODEL", "fasth3"),
             api_key=args.api_key or os.environ.get("REACTOR_API_KEY") or None,
             local=args.local or _flag(os.environ.get("REACTOR_LOCAL")),
-            openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-            openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
             openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
             style=style,
-            max_scenes=max(1, int(os.environ.get("MAX_SCENES", "3"))),
+            max_chunks=max(1, int(os.environ.get("MAX_CHUNKS", "6"))),
+            moderation_enabled=_flag(os.environ.get("MODERATION_ENABLED", "1")),
+            moderation_api_key=os.environ.get("MODERATION_API_KEY") or openai_api_key,
+            moderation_base_url=os.environ.get("MODERATION_BASE_URL") or openai_base_url,
+            moderation_model=os.environ.get("MODERATION_MODEL", "omni-moderation-latest"),
+            idle_prompts=idle_prompts,
+            idle_queue_target=int(os.environ.get("IDLE_QUEUE_TARGET", "6")),
             sink=(args.sink or os.environ.get("SINK", "noop")).lower(),
             rtmp_url=args.rtmp_url or os.environ.get("RTMP_URL") or None,
             rtmp_video_bitrate_k=int(os.environ.get("RTMP_VIDEO_BITRATE_K", "4500")),
