@@ -3,7 +3,7 @@ $schema: reactor/v1
 
 model:
   name: fasth3
-  version: v0.4.0
+  version: v0.5.0
   description: |
     Generate 768p video clips with synchronized audio from a queue of prompts.
     MiniMax-H3 (35B), distilled by FastVideo to four transformer forwards with

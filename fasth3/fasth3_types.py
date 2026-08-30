@@ -36,20 +36,23 @@ class FastH3Output(Output):
 
 @dataclass(frozen=True)
 class ClipInfo:
-    """One queued generation, as every clip-referencing message reports it.
+    """One clip, as every clip-referencing message reports it.
 
     Whole and self-contained on purpose: `clip_queued`, `queue_update`,
-    `clip_started`, `clip_finished`, `clip_stopped` and `clip_failed` all carry
-    this same structure, so a client never has to join a clip id against an
-    earlier message to know what a clip is.
+    `clip_generated`, `clip_moved`, `clip_started`, `clip_finished`,
+    `clip_stopped` and `clip_failed` all carry this same structure, so a
+    client never has to join a clip id against an earlier message to know
+    what a clip is.
 
-    ``clip_id`` is the UUID the session assigned at `enqueue`; every later
-    reference to the clip uses it. ``prompt`` and ``metadata`` are exactly what
-    the client enqueued — the metadata is an opaque string the model never
-    reads, for frontends to carry their own tracking data. ``frames`` and
-    ``seconds`` are the clip's length in both units, fixed when it was
-    enqueued. ``seed`` is the value this clip generates from. ``ready`` is
-    whether the clip is built and can be played.
+    A clip lives in exactly one of two queues: the **generation queue**
+    (waiting to build, ``ready: false``) and then the **playout queue**
+    (built, ``ready: true``), which playing consumes. ``clip_id`` is the UUID
+    the session assigned at `enqueue`; every later reference to the clip uses
+    it. ``prompt`` and ``metadata`` are exactly what the client enqueued —
+    the metadata is an opaque string the model never reads, for frontends to
+    carry their own tracking data. ``frames`` and ``seconds`` are the clip's
+    length in both units, fixed when it was enqueued. ``seed`` is the value
+    this clip generates from.
     """
 
     clip_id: str
@@ -89,8 +92,9 @@ class StateUpdate(ModelMessage):
     )
     autoplay: bool = MessageField(
         description=(
-            "Ready clips start on their own whenever nothing is playing. Off "
-            "by default: playback waits for an explicit `play`."
+            "The playout queue's front clip starts on its own whenever "
+            "nothing is playing. Off by default: playback waits for an "
+            "explicit `play`."
         )
     )
     aspect: str = MessageField(description="Aspect ratio in effect, e.g. `16:9`.")
@@ -100,11 +104,20 @@ class StateUpdate(ModelMessage):
     playing_clip_id: str | None = MessageField(
         description="UUID of the clip now playing, or null when the stream is idle."
     )
-    queued: int = MessageField(
-        description="Clips in the queue right now, built and still generating alike."
+    generation_queued: int = MessageField(
+        description="Clips in the generation queue: enqueued, not yet built."
     )
-    queue_capacity: int = MessageField(
-        description="Most clips the queue holds; `enqueue` is refused beyond it."
+    generation_capacity: int = MessageField(
+        description="Most clips the generation queue holds; `enqueue` is refused beyond it."
+    )
+    playout_queued: int = MessageField(
+        description="Built clips in the playout queue, each playable right now."
+    )
+    playout_capacity: int = MessageField(
+        description=(
+            "Most built clips the playout queue holds. Generation pauses "
+            "while it is full and resumes as playing or `pop` frees a slot."
+        )
     )
     clips_played: int = MessageField(
         description="Clips that finished playing or were stopped since the session began."
@@ -122,18 +135,27 @@ class StateUpdate(ModelMessage):
 
 
 class QueueUpdate(ModelMessage):
-    """Emitted on connect and whenever the queue changes, and answers `get_queue`.
+    """Emitted on connect and whenever either queue changes, and answers `get_queue`.
 
-    The whole queue, oldest first, each entry a complete `ClipInfo`. A change
-    is any of: a clip enqueued, a clip becoming ready, a clip leaving the queue
-    to play, or the queue being cleared by `reset`.
+    Both queues in full, front first, each entry a complete `ClipInfo`. A
+    change is any of: a clip enqueued or `move`d, a build finishing (the clip
+    crosses from `generation` to `playout`), a clip leaving to play or by
+    `pop`, or the queues being cleared by `reset`.
     """
 
-    clips: list[ClipInfo] = MessageField(
+    generation: list[ClipInfo] = MessageField(
         description=(
-            "Every clip in the queue, oldest first. Builds run through the "
-            "queue in this order, so entries with `ready: true` always sit at "
-            "the front."
+            "Clips waiting to build, front first. Builds consume this queue "
+            "from the front, one at a time, pausing only while `playout` is "
+            "at capacity. `enqueue`'s `position` and `move` control the "
+            "order."
+        )
+    )
+    playout: list[ClipInfo] = MessageField(
+        description=(
+            "Built clips waiting to play, front first. A finished build "
+            "joins at the back; bare `play` (and autoplay) takes the front; "
+            "`move` reorders; playing or `pop` consumes."
         )
     )
 
@@ -143,9 +165,34 @@ class ClipQueued(ModelMessage):
 
     clip: ClipInfo = MessageField(
         description=(
-            "The queued clip, UUID included. `ready` is false here; watch "
-            "`queue_update` for it turning true."
+            "The queued clip, UUID included. `ready` is false here; "
+            "`clip_generated` announces it crossing into the playout queue."
         )
+    )
+
+
+class ClipGenerated(ModelMessage):
+    """Emitted when a clip's build completes.
+
+    The clip has left the generation queue and joined the back of the playout
+    queue, playable immediately. `queue_update` accompanies it with both
+    queues' new contents.
+    """
+
+    clip: ClipInfo = MessageField(
+        description="The freshly built clip, now at the back of the playout queue."
+    )
+
+
+class ClipMoved(ModelMessage):
+    """Emitted when `move` repositions a clip within its queue."""
+
+    clip: ClipInfo = MessageField(description="The clip that moved.")
+    queue: str = MessageField(
+        description="Which queue it moved within: `generation` or `playout`."
+    )
+    position: int = MessageField(
+        description="The clip's resulting position in that queue, 0 = front."
     )
 
 
@@ -183,13 +230,13 @@ class ClipStopped(ModelMessage):
 
 
 class ClipPopped(ModelMessage):
-    """Emitted when `pop` removes a clip from the queue.
+    """Emitted when `pop` removes a clip from either queue.
 
     The clip's slot is free again immediately. A build already running for it
     is discarded when it completes; the GPUs cannot abandon it mid-build.
     """
 
-    clip: ClipInfo = MessageField(description="The clip that left the queue.")
+    clip: ClipInfo = MessageField(description="The clip that left its queue.")
 
 
 class ClipFailed(ModelMessage):
@@ -246,7 +293,7 @@ class SessionReset(ModelMessage):
     """
 
     cleared_clips: int = MessageField(
-        description="Clips that were dropped from the queue, built and pending alike."
+        description="Clips dropped from both queues, built and pending alike."
     )
     was_playing: bool = MessageField(
         description="A clip was playing and has been cut; a `clip_stopped` accompanies it."

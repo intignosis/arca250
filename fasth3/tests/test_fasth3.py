@@ -24,7 +24,7 @@ import fasth3_session_rules as session_rules
 from fasth3 import EMIT_FRAMES, FastH3
 from fasth3_assets import FastH3Config, load_config
 from fasth3_backend import ClipJob
-from fasth3_queue import ClipQueue
+from fasth3_queue import ClipQueue, new_entry
 from fasth3_types import ClipInfo
 
 MODEL_DIR = Path(__file__).resolve().parents[1]
@@ -130,80 +130,89 @@ def make_queue(capacity=3) -> ClipQueue:
     return ClipQueue(capacity)
 
 
-def test_the_queue_keeps_enqueue_order():
+def add(q, prompt, seed=0, position=None, frames=124):
+    entry = new_entry(prompt=prompt, metadata="", frames=frames, seed=seed)
+    q.add(entry, position)
+    return entry
+
+
+def built(entry):
+    entry.video = [np.zeros((2, 2, 3), np.uint8)]
+    entry.audio = np.zeros((1, 4), np.int16)
+    return entry
+
+
+def test_the_queue_keeps_add_order():
     q = make_queue()
-    a = q.enqueue(prompt="a", metadata="", frames=124, seed=1)
-    b = q.enqueue(prompt="b", metadata="", frames=124, seed=2)
+    a = add(q, "a", seed=1)
+    b = add(q, "b", seed=2)
     assert [entry.prompt for entry in map(q.get, [a.clip_id, b.clip_id])] == ["a", "b"]
     assert q.snapshot()[0]["clip_id"] == a.clip_id
     assert q.next_to_build() is a
+    assert q.head() is a
 
 
-def test_build_next_enters_the_unbuilt_segment_front():
+def test_add_at_a_position_lands_there_clamped():
     q = make_queue(capacity=5)
-    ready = q.enqueue(prompt="ready", metadata="", frames=124, seed=1)
-    ready.video, ready.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 4), np.int16)
-    building = q.enqueue(prompt="building", metadata="", frames=124, seed=2)
-    building.building = True
-    waiting = q.enqueue(prompt="waiting", metadata="", frames=124, seed=3)
-
-    jumped = q.enqueue(prompt="jumped", metadata="", frames=124, seed=4, build_next=True)
-    # Behind everything ready or building, ahead of everything waiting.
-    assert [e["prompt"] for e in q.snapshot()] == ["ready", "building", "jumped", "waiting"]
-    assert q.next_to_build() is jumped
-
-    # A second build_next lands newest-first, and nothing already placed moves.
-    q.enqueue(prompt="jumped2", metadata="", frames=124, seed=5, build_next=True)
+    add(q, "a")
+    add(q, "b")
+    add(q, "front", position=0)
+    add(q, "middle", position=2)
+    add(q, "past-the-end", position=99)
     assert [e["prompt"] for e in q.snapshot()] == [
-        "ready", "building", "jumped2", "jumped", "waiting",
+        "front", "a", "middle", "b", "past-the-end",
     ]
 
 
-def test_build_next_on_an_all_ready_queue_appends():
-    q = make_queue()
-    first = q.enqueue(prompt="a", metadata="", frames=124, seed=1)
-    first.video, first.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 4), np.int16)
-    q.enqueue(prompt="b", metadata="", frames=124, seed=2, build_next=True)
-    assert [e["prompt"] for e in q.snapshot()] == ["a", "b"]
+def test_move_repositions_within_the_queue():
+    q = make_queue(capacity=5)
+    a, b, c = add(q, "a"), add(q, "b"), add(q, "c")
+    assert q.move(c, 0) == 0
+    assert [e["prompt"] for e in q.snapshot()] == ["c", "a", "b"]
+    assert q.move(c, 99) == 2  # clamped to the back
+    assert [e["prompt"] for e in q.snapshot()] == ["a", "b", "c"]
+    q.remove(b)
+    with pytest.raises(ValueError):
+        q.move(b, 0)
 
 
 def test_every_clip_gets_a_distinct_uuid():
     q = make_queue()
-    ids = {q.enqueue(prompt="p", metadata="", frames=124, seed=0).clip_id for _ in range(3)}
+    ids = {add(q, "p").clip_id for _ in range(3)}
     assert len(ids) == 3
 
 
 def test_the_queue_is_bounded():
     q = make_queue(capacity=2)
-    q.enqueue(prompt="a", metadata="", frames=124, seed=1)
-    q.enqueue(prompt="b", metadata="", frames=124, seed=2)
+    add(q, "a", seed=1)
+    add(q, "b", seed=2)
     assert q.full
     with pytest.raises(ValueError):
-        q.enqueue(prompt="c", metadata="", frames=124, seed=3)
+        add(q, "c", seed=3)
 
 
 def test_ready_is_derived_from_the_built_payload():
     q = make_queue()
-    entry = q.enqueue(prompt="a", metadata="", frames=124, seed=1)
+    entry = add(q, "a", seed=1)
     assert entry.ready is False
-    assert q.next_ready() is None
-    entry.video, entry.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 10), np.int16)
+    built(entry)
     assert entry.ready is True
-    assert q.next_ready() is entry
-    assert q.ready_count() == 1
 
 
 def test_building_entries_are_not_resubmitted():
     q = make_queue()
-    entry = q.enqueue(prompt="a", metadata="", frames=124, seed=1)
+    entry = add(q, "a", seed=1)
     entry.building = True
     assert q.next_to_build() is None
+    behind = add(q, "b", seed=2)
+    assert q.next_to_build() is behind
 
 
 def test_the_snapshot_is_exactly_the_published_struct():
     """`ClipEntry.snapshot()` and the schema's `ClipInfo` must never drift."""
     q = make_queue()
-    entry = q.enqueue(prompt="a", metadata="m", frames=124, seed=7)
+    entry = new_entry(prompt="a", metadata="m", frames=124, seed=7)
+    q.add(entry)
     snapshot = entry.snapshot()
     assert list(snapshot) == [field.name for field in dataclasses.fields(ClipInfo)]
     assert snapshot["seconds"] == pytest.approx(124 / 24, abs=1e-3)
@@ -216,44 +225,55 @@ def test_the_snapshot_is_exactly_the_published_struct():
 # The command state machine clients read out of `state_update`.
 
 
+def rules(*, playing=False, generation=0, playout=0, capacity=10):
+    return session_rules.valid_commands(
+        playing=playing,
+        generation_queued=generation,
+        generation_capacity=capacity,
+        playout_queued=playout,
+    )
+
+
 def test_an_empty_idle_session_can_only_enqueue_and_configure():
-    commands = session_rules.valid_commands(playing=False, queued=0, ready=0, capacity=10)
+    commands = rules()
     assert "enqueue" in commands
     assert "set_canvas" in commands
     assert "play" not in commands
     assert "stop" not in commands
+    assert "move" not in commands
 
 
-def test_a_ready_clip_makes_play_valid():
-    commands = session_rules.valid_commands(playing=False, queued=1, ready=1, capacity=10)
+def test_a_built_clip_makes_play_valid():
+    commands = rules(playout=1)
     assert "play" in commands
     assert "pop" in commands
+    assert "move" in commands
     # Queued clips were built at the current canvas, so it is locked.
     assert "set_canvas" not in commands
 
 
-def test_pop_needs_a_queued_clip():
-    commands = session_rules.valid_commands(playing=False, queued=0, ready=0, capacity=10)
+def test_pop_and_move_need_a_queued_clip():
+    commands = rules()
     assert "pop" not in commands
+    assert "move" not in commands
+    assert "pop" in rules(generation=1)
 
 
 def test_playing_offers_stop_and_locks_the_canvas():
-    commands = session_rules.valid_commands(playing=True, queued=0, ready=0, capacity=10)
+    commands = rules(playing=True)
     assert "stop" in commands
     assert "play" not in commands
     assert "set_canvas" not in commands
 
 
-def test_a_full_queue_refuses_enqueue():
-    commands = session_rules.valid_commands(playing=False, queued=10, ready=10, capacity=10)
+def test_a_full_generation_queue_refuses_enqueue():
+    commands = rules(generation=10, capacity=10)
     assert "enqueue" not in commands
 
 
 def test_conditions_and_reads_are_always_available():
-    for playing, queued, ready in ((False, 0, 0), (True, 3, 1), (False, 10, 10)):
-        commands = session_rules.valid_commands(
-            playing=playing, queued=queued, ready=ready, capacity=10
-        )
+    for playing, generation, playout in ((False, 0, 0), (True, 3, 1), (False, 10, 10)):
+        commands = rules(playing=playing, generation=generation, playout=playout)
         assert {
             "set_clip_seconds", "set_seed", "set_autoplay", "get_queue", "get_state", "reset"
         } <= set(commands)
@@ -323,13 +343,14 @@ def test_a_bad_aspect_or_queue_size_fails_startup(tmp_path):
 # included — is testable on a laptop.
 
 
-def make_config(queue_size=3) -> FastH3Config:
+def make_config(queue_size=3, generation_queue_size=None) -> FastH3Config:
     return FastH3Config(
         aspect="16:9",
         clip_frames=clip_plan.frames_for_seconds(clip_plan.MAX_SECONDS),
         seed=1000,
         num_inference_steps=5,
         queue_size=queue_size,
+        generation_queue_size=generation_queue_size or queue_size,
         warmup_aspects=("16:9",),
         warmup_frames=(clip_plan.frames_for_seconds(clip_plan.MAX_SECONDS),),
         inference={},
@@ -372,6 +393,15 @@ def model():
     return instance
 
 
+def make_ready(model, clip):
+    """What `_pump_builds` does when a build lands: cross into playout."""
+    entry = model._generation.get(clip["clip_id"])
+    model._generation.remove(entry)
+    entry.video, entry.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 10), np.int16)
+    model._playout.add(entry)
+    return entry
+
+
 def test_enqueue_returns_the_full_struct(model):
     reply = run(model.enqueue(prompt="a lighthouse in fog", metadata="req-42"))
     clip = reply.clip
@@ -386,17 +416,34 @@ def test_enqueue_returns_the_full_struct(model):
     assert list(clip) == [field.name for field in dataclasses.fields(ClipInfo)]
 
 
-def test_enqueue_build_next_reorders_the_unbuilt_queue(model):
+def test_enqueue_position_zero_is_the_next_build(model):
     first = run(model.enqueue(prompt="waits", metadata="")).clip
-    jumped = run(model.enqueue(prompt="jumps", metadata="", build_next=True)).clip
-    order = [clip["clip_id"] for clip in model._queue.snapshot()]
+    jumped = run(model.enqueue(prompt="jumps", metadata="", position=0)).clip
+    order = [clip["clip_id"] for clip in model._generation.snapshot()]
     assert order == [jumped["clip_id"], first["clip_id"]]
+    assert model._generation.next_to_build().clip_id == jumped["clip_id"]
+
+
+def test_move_repositions_and_names_the_queue(model):
+    first = run(model.enqueue(prompt="a", metadata="")).clip
+    second = run(model.enqueue(prompt="b", metadata="")).clip
+    reply = run(model.move(clip_id=second["clip_id"], position=0))
+    assert reply.queue == "generation" and reply.position == 0
+    order = [clip["clip_id"] for clip in model._generation.snapshot()]
+    assert order == [second["clip_id"], first["clip_id"]]
+
+    built = make_ready(model, first)
+    reply = run(model.move(clip_id=built.clip_id, position=0))
+    assert reply.queue == "playout" and reply.position == 0
+
+    assert run(model.move(clip_id="nope", position=0)) is None
+    assert refusal(model).command == "move" 
 
 
 def test_enqueue_needs_a_prompt(model):
     assert run(model.enqueue(prompt="   ", metadata="")) is None
     assert refusal(model).command == "enqueue"
-    assert len(model._queue) == 0
+    assert len(model._generation) == 0
 
 
 def test_enqueue_snapshots_the_conditions_in_force(model):
@@ -407,7 +454,7 @@ def test_enqueue_snapshots_the_conditions_in_force(model):
     assert first["frames"] == clip_plan.frames_for_seconds(8.0)
     assert second["frames"] == clip_plan.frames_for_seconds(14.375)
     # Clips already queued keep the length they were enqueued with.
-    assert model._queue.get(first["clip_id"]).frames == first["frames"]
+    assert model._generation.get(first["clip_id"]).frames == first["frames"]
 
 
 def test_each_enqueue_advances_the_seed(model):
@@ -453,7 +500,7 @@ def test_a_full_queue_refuses_the_next_enqueue(model):
         run(model.enqueue(prompt=f"p{index}", metadata=""))
     assert run(model.enqueue(prompt="overflow", metadata="")) is None
     assert refusal(model).command == "enqueue"
-    assert len(model._queue) == 3
+    assert len(model._generation) == 3
 
 
 def test_play_needs_a_ready_clip(model):
@@ -468,24 +515,22 @@ def test_play_needs_a_ready_clip(model):
     assert "not-a-real-id" in refusal(model).reason
 
 
-def test_play_takes_the_oldest_ready_clip(model):
+def test_play_takes_the_playout_front(model):
     first = run(model.enqueue(prompt="a", metadata="")).clip
     second = run(model.enqueue(prompt="b", metadata="")).clip
-    for clip_id in (first["clip_id"], second["clip_id"]):
-        entry = model._queue.get(clip_id)
-        entry.video, entry.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 10), np.int16)
+    make_ready(model, first)
+    make_ready(model, second)
 
     run(model.play(clip_id=""))
     assert model._play_request.clip_id == first["clip_id"]
-    # Playing consumed the entry: the queue now holds only the second clip.
-    assert [clip["clip_id"] for clip in model._queue.snapshot()] == [second["clip_id"]]
+    # Playing consumed the entry: the playout queue holds only the second.
+    assert [clip["clip_id"] for clip in model._playout.snapshot()] == [second["clip_id"]]
 
 
 def test_play_by_id_takes_that_clip(model):
     run(model.enqueue(prompt="a", metadata=""))
     second = run(model.enqueue(prompt="b", metadata="")).clip
-    entry = model._queue.get(second["clip_id"])
-    entry.video, entry.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 10), np.int16)
+    make_ready(model, second)
 
     run(model.play(clip_id=second["clip_id"]))
     assert model._play_request.clip_id == second["clip_id"]
@@ -493,8 +538,7 @@ def test_play_by_id_takes_that_clip(model):
 
 def test_only_one_clip_plays_at_a_time(model):
     queued = run(model.enqueue(prompt="a", metadata="")).clip
-    entry = model._queue.get(queued["clip_id"])
-    entry.video, entry.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 10), np.int16)
+    make_ready(model, queued)
     run(model.play(clip_id=""))
 
     assert run(model.play(clip_id="")) is None
@@ -506,7 +550,13 @@ def test_pop_frees_the_slot(model):
     victim = run(model.enqueue(prompt="drop", metadata="")).clip
     reply = run(model.pop(clip_id=victim["clip_id"]))
     assert reply.clip["clip_id"] == victim["clip_id"]
-    assert [c["clip_id"] for c in model._queue.snapshot()] == [kept["clip_id"]]
+    assert [c["clip_id"] for c in model._generation.snapshot()] == [kept["clip_id"]]
+
+    # And a built clip pops out of the playout queue the same way.
+    make_ready(model, kept)
+    reply = run(model.pop(clip_id=kept["clip_id"]))
+    assert reply.clip["clip_id"] == kept["clip_id"]
+    assert len(model._playout) == 0
 
     assert run(model.pop(clip_id="nope")) is None
     assert refusal(model).command == "pop"
@@ -518,14 +568,14 @@ def test_pop_cancels_the_build_in_flight(model):
     from fasth3_backend import ClipJob
 
     clip = run(model.enqueue(prompt="building", metadata="")).clip
-    entry = model._queue.get(clip["clip_id"])
+    entry = model._generation.get(clip["clip_id"])
     entry.building = True
     job = ClipJob(None)
     model._build = (entry, job, 0.0)
 
     run(model.pop(clip_id=clip["clip_id"]))
     assert job.cancelled is True
-    assert len(model._queue) == 0
+    assert len(model._generation) == 0
 
 
 def test_stop_needs_a_playing_clip(model):
@@ -536,14 +586,13 @@ def test_stop_needs_a_playing_clip(model):
 
 def test_stop_asks_the_playout_loop_to_cut(model):
     queued = run(model.enqueue(prompt="a", metadata="")).clip
-    entry = model._queue.get(queued["clip_id"])
-    entry.video, entry.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 10), np.int16)
+    make_ready(model, queued)
     run(model.play(clip_id=""))
 
     run(model.stop())
     assert model._stop_playout is True
-    # The queue is untouched: stop cuts playout, not the queue.
-    assert len(model._queue) == 0  # the played clip had already left it
+    # The queues are untouched: stop cuts playout, not the queues.
+    assert len(model._playout) == 0  # the played clip had already left it
 
 
 def test_the_canvas_is_locked_while_clips_exist(model):
@@ -576,7 +625,8 @@ def test_reset_drops_the_queue_and_restores_every_default(model):
     reply = run(model.reset())
     assert reply.cleared_clips == 2
     assert reply.was_playing is False
-    assert len(model._queue) == 0
+    assert len(model._generation) == 0
+    assert len(model._playout) == 0
     assert model._clip_frames == model.config.clip_frames
     assert model._seed == model.config.seed
     assert model._aspect == model.config.aspect
@@ -586,8 +636,9 @@ def test_get_queue_reports_the_same_payload_that_is_broadcast(model):
     run(model.enqueue(prompt="a", metadata="m"))
     direct = run(model.get_queue())
     broadcasts = [m for m in model.sent if type(m).__name__ == "QueueUpdate"]
-    assert direct.clips == broadcasts[-1].clips
-    assert direct.clips[0]["metadata"] == "m"
+    assert direct.generation == broadcasts[-1].generation
+    assert direct.playout == broadcasts[-1].playout
+    assert direct.generation[0]["metadata"] == "m"
 
 
 def test_get_state_reports_the_same_snapshot_that_is_broadcast(model):
@@ -601,19 +652,21 @@ def test_get_state_reports_the_same_snapshot_that_is_broadcast(model):
 
 def test_the_snapshot_publishes_the_live_command_set(model):
     snapshot = run(model.get_state())
-    assert "play" not in snapshot.valid_commands  # nothing ready yet
+    assert "play" not in snapshot.valid_commands  # nothing built yet
     assert "enqueue" in snapshot.valid_commands
-    assert snapshot.queued == 0
-    assert snapshot.queue_capacity == 3
+    assert snapshot.generation_queued == 0
+    assert snapshot.generation_capacity == 3
+    assert snapshot.playout_queued == 0
+    assert snapshot.playout_capacity == 3
     assert snapshot.playing is False
     assert snapshot.playing_clip_id is None
 
     queued = run(model.enqueue(prompt="a", metadata="")).clip
-    entry = model._queue.get(queued["clip_id"])
-    entry.video, entry.audio = [np.zeros((2, 2, 3), np.uint8)], np.zeros((1, 10), np.int16)
+    make_ready(model, queued)
     snapshot = run(model.get_state())
     assert "play" in snapshot.valid_commands
-    assert snapshot.queued == 1
+    assert snapshot.generation_queued == 0
+    assert snapshot.playout_queued == 1
 
 
 def test_a_refusal_never_masquerades_as_a_reply(model):
@@ -747,7 +800,7 @@ def test_enqueued_clips_build_in_order_and_turn_ready(live):
     async def scenario():
         await live.enqueue(prompt="a", metadata="")
         await live.enqueue(prompt="b", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 2)
+        await eventually(lambda: len(live._playout) == 2)
 
     drive(live, scenario)
     assert [prompt for _f, prompt, _s in live.backend.built] == ["a", "b"]
@@ -758,15 +811,17 @@ def test_enqueued_clips_build_in_order_and_turn_ready(live):
 def test_a_played_clip_streams_whole_then_holds_on_black(live):
     async def scenario():
         await live.enqueue(prompt="a", metadata="tag")
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
         await live.play(clip_id="")
         await eventually(lambda: "ClipFinished" in names(live.messages))
         # No auto-play: nothing else may start on its own.
         await asyncio.sleep(0.15)
 
     drive(live, scenario)
-    # `clip_queued` is the enqueue reply, not a broadcast, so it is not here.
+    # `clip_queued` is the enqueue reply, not a broadcast, so it is not here;
+    # `clip_generated` marks the build crossing into the playout queue.
     assert names([m for m in live.messages if "Clip" in type(m).__name__]) == [
+        "ClipGenerated",
         "ClipStarted",
         "ClipFinished",
     ]
@@ -785,7 +840,7 @@ def test_a_played_clip_streams_whole_then_holds_on_black(live):
 def test_video_and_audio_stay_locked_slice_for_slice(live):
     async def scenario():
         await live.enqueue(prompt="a", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
         await live.play(clip_id="")
         await eventually(lambda: "ClipFinished" in names(live.messages))
 
@@ -806,7 +861,7 @@ def test_stop_cuts_the_clip_and_keeps_the_queue(live):
     async def scenario():
         await live.enqueue(prompt="a", metadata="")
         await live.enqueue(prompt="b", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 2)
+        await eventually(lambda: len(live._playout) == 2)
         await live.play(clip_id="")
         await eventually(lambda: live.emitted)
         await live.stop()
@@ -818,8 +873,8 @@ def test_stop_cuts_the_clip_and_keeps_the_queue(live):
     # The cut clip went out only partially.
     frames = sum(output.main_video.shape[0] for output in live.emitted)
     assert frames < 48
-    # The other clip still waits, ready, for the next play.
-    assert live._queue.ready_count() == 1
+    # The other clip still waits, built, for the next play.
+    assert len(live._playout) == 1
 
 
 def test_builds_continue_while_a_clip_plays(live):
@@ -829,11 +884,11 @@ def test_builds_continue_while_a_clip_plays(live):
 
     async def scenario():
         await live.enqueue(prompt="a", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
         await live.play(clip_id="")
         await eventually(lambda: live.emitted)
         await live.enqueue(prompt="b", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
         built_during_play["value"] = live._playing is not None
         await eventually(lambda: "ClipFinished" in names(live.messages))
 
@@ -841,7 +896,7 @@ def test_builds_continue_while_a_clip_plays(live):
     # The second build was submitted and finished while the first clip streamed.
     assert [prompt for _f, prompt, _s in live.backend.built] == ["a", "b"]
     assert built_during_play["value"] is True
-    assert live._queue.ready_count() == 1
+    assert len(live._playout) == 1  # the mid-play build crossed into playout
 
 
 def test_a_failing_build_reports_and_the_queue_moves_on(live):
@@ -850,14 +905,14 @@ def test_a_failing_build_reports_and_the_queue_moves_on(live):
         await live.enqueue(prompt="a", metadata="")
         await live.enqueue(prompt="b", metadata="")
         await eventually(lambda: "ClipFailed" in names(live.messages))
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
 
     drive(live, scenario)
     failed = next(m for m in live.messages if type(m).__name__ == "ClipFailed")
     assert "the engine fell over" in failed.reason
     assert failed.clip["prompt"] == "a"
-    # The failed clip left the queue; the survivor is the second one.
-    assert [clip["prompt"] for clip in live._queue.snapshot()] == ["b"]
+    # The failed clip left the queues; the survivor crossed into playout.
+    assert [clip["prompt"] for clip in live._playout.snapshot()] == ["b"]
 
 
 def test_reset_discards_a_build_still_in_flight(live):
@@ -871,9 +926,9 @@ def test_reset_discards_a_build_still_in_flight(live):
         await asyncio.sleep(0.15)
 
     drive(live, scenario)
-    assert len(live._queue) == 0
+    assert len(live._generation) == 0
+    assert len(live._playout) == 0
     assert "ClipFailed" not in names(live.messages)
-    assert live._queue.ready_count() == 0
 
 
 def test_the_pacer_holds_24_fps(live):
@@ -881,7 +936,7 @@ def test_the_pacer_holds_24_fps(live):
 
     async def scenario():
         await live.enqueue(prompt="a", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
         started = time.monotonic()
         await live.play(clip_id="")
         await eventually(lambda: "ClipFinished" in names(live.messages))
@@ -921,7 +976,7 @@ def test_autoplay_chains_ready_clips_without_play(live):
 def test_without_autoplay_nothing_starts_on_its_own(live):
     async def scenario():
         await live.enqueue(prompt="a", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
         await asyncio.sleep(0.2)
 
     drive(live, scenario)
@@ -935,7 +990,7 @@ def test_a_lost_audience_ends_the_playout_quietly(live):
 
     async def scenario():
         await live.enqueue(prompt="a", metadata="")
-        await eventually(lambda: live._queue.ready_count() == 1)
+        await eventually(lambda: len(live._playout) == 1)
         await live.play(clip_id="")
         await eventually(lambda: live.emitted)
         # The scenario wrapper clears `connected`, which is the audience leaving.
@@ -956,7 +1011,7 @@ def test_generation_is_gated_on_an_audience(live):
 
     asyncio.run(main())
     assert live.backend.built == []
-    assert live._queue.ready_count() == 0
+    assert len(live._playout) == 0
 
 
 # ---------------------------------------------------------- published contract
@@ -972,6 +1027,7 @@ EXPECTED_COMMANDS = {
     "enqueue": "ClipQueued",
     "get_queue": "QueueUpdate",
     "get_state": "StateUpdate",
+    "move": "ClipMoved",
     "play": None,
     "pop": "ClipPopped",
     "reset": "SessionReset",
@@ -987,7 +1043,9 @@ EXPECTED_MESSAGES = {
     "canvas_accepted",
     "clip_failed",
     "clip_finished",
+    "clip_generated",
     "clip_length_accepted",
+    "clip_moved",
     "clip_popped",
     "clip_queued",
     "clip_started",
@@ -1001,7 +1059,7 @@ EXPECTED_MESSAGES = {
 
 # Commands that can be refused. Each one has to say so in its own summary, and
 # name the message a client will actually receive.
-EXPECTED_REJECTIONS = ("enqueue", "play", "pop", "stop", "set_canvas")
+EXPECTED_REJECTIONS = ("enqueue", "move", "play", "pop", "stop", "set_canvas")
 
 # The struct every clip-referencing message embeds, and its JSON types.
 EXPECTED_CLIP_INFO = {
@@ -1064,7 +1122,8 @@ def test_every_message_is_published_once(schema):
 def test_every_clip_message_embeds_the_full_struct(schema):
     """`ClipInfo` rides whole on every message that references a clip."""
     for message in (
-        "ClipQueued", "ClipStarted", "ClipFinished", "ClipStopped", "ClipFailed", "ClipPopped"
+        "ClipQueued", "ClipGenerated", "ClipMoved", "ClipStarted",
+        "ClipFinished", "ClipStopped", "ClipFailed", "ClipPopped",
     ):
         clip = schema["components"]["schemas"][message]["properties"]["clip"]
         rendered = {
@@ -1072,11 +1131,12 @@ def test_every_clip_message_embeds_the_full_struct(schema):
         }
         assert rendered == EXPECTED_CLIP_INFO, message
         assert set(clip.get("required", [])) == set(EXPECTED_CLIP_INFO), message
-    # And the queue reports a list of the same struct.
-    items = schema["components"]["schemas"]["QueueUpdate"]["properties"]["clips"]["items"]
-    assert {name: field["type"] for name, field in items["properties"].items()} == (
-        EXPECTED_CLIP_INFO
-    )
+    # And both queues report lists of the same struct.
+    for queue in ("generation", "playout"):
+        items = schema["components"]["schemas"]["QueueUpdate"]["properties"][queue]["items"]
+        assert {name: field["type"] for name, field in items["properties"].items()} == (
+            EXPECTED_CLIP_INFO
+        ), queue
 
 
 def test_free_text_fields_are_marked_for_moderation(schema):
@@ -1167,6 +1227,11 @@ def test_every_command_summary_names_what_it_emits(schema):
             assert "state_update" in summary
             continue
         if name == "get_queue":
+            assert "queue_update" in summary
+            continue
+        if name == "move":
+            # A move changes order, not state: the snapshot carries counts
+            # and conditions, none of which a reposition touches.
             assert "queue_update" in summary
             continue
         assert "`state_update`" in summary, f"{name} does not say it broadcasts a snapshot"

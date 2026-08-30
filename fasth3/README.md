@@ -1,11 +1,14 @@
 # FastH3
 
-A queue of prompt-driven video clips with synchronized audio. Clients enqueue
-generation requests — a prompt plus their own metadata, each answered with a
-UUID — the model builds them in order into a bounded buffer, and playback is a
-separate, explicit step: `play` streams one built clip at 768p over WebRTC,
-and when it ends the stream holds on black until the next `play`. Nothing
-plays on its own.
+Two queues of prompt-driven video clips with synchronized audio. Clients
+enqueue generation requests — a prompt plus their own metadata, each answered
+with a UUID — into the **generation queue**, which builds consume front-first
+on their own; each finished clip crosses into the **playout queue**
+(`clip_generated`), where playback is a separate, explicit step: `play`
+streams one built clip at 768p over WebRTC, and when it ends the stream holds
+on black until the next `play`. Nothing plays on its own unless autoplay is
+on, and `enqueue`'s `position`, `move`, and `pop` give a client full control
+of both queues' order.
 
 Reach for this when something else decides what plays and when: a frontend
 that lets people submit prompts and curates the order, a playlist that is
@@ -92,29 +95,37 @@ not the model's.
 ## The mental model
 
 ```
-enqueue ──► [ queue, oldest first, up to inference.queue_size ] ──► play ──► tracks
-              build build build ... (in order, one at a time)          │
-              ready clips wait in host memory                          ▼
-                                                            clip ends or stop:
-                                                            flush → black, wait
+enqueue ──► [ generation queue ] ──build──► [ playout queue ] ──play──► tracks
+             front consumed 1-at-a-time,      built clips in host        │
+             always (pauses only while        memory; front is what      ▼
+             playout is full)                 bare play / autoplay   clip ends or
+             position/move/pop reorder        take; move/pop reorder stop: flush →
+                                                                     black, wait
 ```
 
 - **`enqueue` is the only way in.** Each request snapshots the session's
-  conditions (`set_clip_seconds`, `set_seed`, `set_canvas`) as they stand, gets
-  a UUID, and joins the back of the queue. The queue is bounded
-  (`inference.queue_size`, default 10); a full queue refuses further enqueues.
-- **Builds run through the queue front to back**, one at a time, whenever an
-  audience is connected — including while another clip is playing. A finished
-  build turns the entry `ready: true`, announced on `queue_update`. An
-  `enqueue` with `build_next` enters at the front of the unbuilt segment
-  instead of the back, so it is the next build the scheduler picks; once
-  placed, no entry ever moves.
-- **`play` is the only way out** — unless autoplay is on. Bare `play` takes the
-  oldest ready clip; a `clip_id` takes that specific one. Playing consumes the
-  entry. When the clip ends — or `stop` cuts it — the output flushes to black
-  and the session waits for the next `play`. With `set_autoplay` on, the
-  oldest ready clip starts on its own whenever nothing is playing, so a
-  steadily fed queue plays through hands-free; `stop` then acts as a skip.
+  conditions (`set_clip_seconds`, `set_seed`, `set_canvas`) as they stand,
+  gets a UUID, and enters the generation queue — at the back, or at
+  `position` (0 = the next build). The generation queue is bounded
+  (`inference.generation_queue_size`, default 20); full, it refuses further
+  enqueues.
+- **Builds consume the generation queue front-first, always**, one at a
+  time, whenever an audience is connected — including while another clip is
+  playing — pausing only while the playout queue is at capacity (a finished
+  build needs a slot to land in). A finished build crosses into the playout
+  queue's back, announced by `clip_generated` and `queue_update`; a client
+  that wants it sooner `move`s it forward.
+- **`play` is the only way out** — unless autoplay is on. Bare `play` takes
+  the playout queue's front; a `clip_id` takes that specific clip. Playing
+  consumes the entry. When the clip ends — or `stop` cuts it — the output
+  flushes to black and the session waits for the next `play`. With
+  `set_autoplay` on, the playout front starts on its own whenever nothing is
+  playing, so a steadily fed queue plays through hands-free; `stop` then
+  acts as a skip.
+- **Order is the client's, at every stage.** `enqueue`'s `position` places a
+  clip in the generation queue, `move` repositions a clip within whichever
+  queue holds it, and `pop` removes it — the model never reorders anything
+  on its own; a build crossing queues is the only movement it makes.
 - **Everything a clip is travels with every mention of it.** `clip_queued`,
   `queue_update`, `clip_started`, `clip_finished`, `clip_stopped` and
   `clip_failed` all embed the full `ClipInfo` structure, so a client never has
@@ -130,7 +141,7 @@ enqueue ──► [ queue, oldest first, up to inference.queue_size ] ──► 
 | `frames` | int | Clip length in frames, fixed at enqueue time. |
 | `seconds` | float | The same length in seconds (`frames / 24`). |
 | `seed` | int | Seed this clip generates from. |
-| `ready` | bool | Whether the clip is built and can be played. |
+| `ready` | bool | Which queue holds it: `false` = generation, `true` = playout (playable now). |
 
 **Metadata is for the frontend, not the model.** The model stores it and echoes
 it back on every message that references the clip; it never parses it. Use it to
@@ -154,16 +165,17 @@ size in force.
 
 | Command | Parameters | Effect | Rejected when |
 |---|---|---|---|
-| `enqueue` | `prompt` (≤ 800 chars), `metadata` (≤ 2000 chars), `seed` (optional, ≥ 0), `seconds` (optional, 5.167–14.375), `build_next` (optional bool) | Queues one generation; replies `clip_queued` with the full `ClipInfo`. Without a seed the session's advancing default is used; without `seconds` the session's default length. With `build_next` the clip enters ahead of every clip whose build has not started (consecutive ones land newest-first); built and building clips are unaffected. | queue full, empty prompt |
-| `play` | `clip_id` (optional UUID) | Streams the oldest ready clip, or the named one. Emits `clip_started` as frames begin. | already playing, unknown id, clip not ready |
-| `pop` | `clip_id` (UUID) | Removes that clip from the queue, freeing its slot; a build in flight for it is discarded. Replies `clip_popped`. | unknown or missing id |
-| `stop` | — | Cuts the playing clip to black; the queue is untouched. With autoplay on, acts as a skip. Emits `clip_stopped`. | nothing playing |
-| `get_queue` | — | Replies with the full queue — the same payload as `queue_update`. | — |
-| `set_autoplay` | `enabled` (bool) | On, the oldest ready clip starts on its own whenever nothing is playing. Off (default), the stream holds until `play`. Replies `autoplay_accepted`. | — |
+| `enqueue` | `prompt` (≤ 800 chars), `metadata` (≤ 2000 chars), `seed` (optional, ≥ 0), `seconds` (optional, 5.167–14.375), `position` (optional, ≥ 0) | Enters the generation queue at `position` (0 = next build; omitted = the back); replies `clip_queued` with the full `ClipInfo`. Without a seed the session's advancing default is used; without `seconds` the session's default length. | generation queue full, empty prompt |
+| `move` | `clip_id` (UUID), `position` (≥ 0) | Repositions the clip within whichever queue holds it; 0 = front, clamped to the back. Replies `clip_moved` with the queue's name and the landing position. | unknown or missing id |
+| `play` | `clip_id` (optional UUID) | Streams the playout queue's front clip, or the named one. Emits `clip_started` as frames begin. | already playing, unknown id, clip still generating |
+| `pop` | `clip_id` (UUID) | Removes that clip from whichever queue holds it, freeing its slot; a build in flight for it is discarded. Replies `clip_popped`. | unknown or missing id |
+| `stop` | — | Cuts the playing clip to black; both queues are untouched. With autoplay on, acts as a skip. Emits `clip_stopped`. | nothing playing |
+| `get_queue` | — | Replies with both queues — the same payload as `queue_update`. | — |
+| `set_autoplay` | `enabled` (bool) | On, the playout queue's front clip starts on its own whenever nothing is playing. Off (default), the stream holds until `play`. Replies `autoplay_accepted`. | — |
 | `set_clip_seconds` | `seconds` (5.167–14.375) | Default length for enqueues that carry no `seconds`, snapped to what the model can produce; the effective value returns in `clip_length_accepted`. | — |
 | `set_seed` | `seed` (≥ 0) | Default seed for enqueues that carry none; each such enqueue advances it by one. Replies `seed_accepted`. | — |
 | `set_canvas` | `aspect` (`16:9`, `1:1`, `9:16`, `4:3`) | Video size for the session. Replies `canvas_accepted`. | clips queued or playing, unsupported aspect |
-| `reset` | — | Drops the whole queue, cuts any playing clip, restores every default. Replies `session_reset`. | — |
+| `reset` | — | Drops both queues, cuts any playing clip, restores every default. Replies `session_reset`. | — |
 | `get_state` | — | Replies with the full `state_update` snapshot. | — |
 
 A rejected command has no effect and is answered by a broadcast
@@ -174,13 +186,15 @@ A rejected command has no effect and is answered by a broadcast
 | Message | Reaches | When |
 |---|---|---|
 | `state_update` | everyone | On connect, and after every change. A complete snapshot minus the queue's contents — render from this plus `queue_update` alone. |
-| `queue_update` | everyone | On connect, and whenever the queue changes: an enqueue, a clip turning ready, a clip leaving to play, a reset. Carries every `ClipInfo`, oldest first. |
+| `queue_update` | everyone | On connect, and whenever either queue changes: an enqueue or `move`, a build crossing into playout, a clip leaving to play or by `pop`, a reset. Carries both queues in full, front first. |
 | `clip_queued` | the caller | Reply to `enqueue`. The full `ClipInfo`, UUID included. |
+| `clip_generated` | everyone | A build finished: the clip left the generation queue and joined the back of the playout queue, playable immediately. |
+| `clip_moved` | the caller | Reply to `move`. Names the queue and the landing position. |
 | `clip_started` | everyone | A clip's first frames reach the tracks. |
 | `clip_finished` | everyone | A clip was fully sent; the stream is now black until the next `play`. |
 | `clip_stopped` | everyone | `stop` (or `reset`) cut the clip; the rest of it is discarded. |
-| `clip_failed` | everyone | A build failed; the clip left the queue and the queue moves on. |
-| `clip_popped` | the caller | Reply to `pop`. The clip left the queue and its slot is free. |
+| `clip_failed` | everyone | A build failed; the clip left the generation queue and builds move on. |
+| `clip_popped` | the caller | Reply to `pop`. The clip left its queue and the slot is free. |
 | `clip_length_accepted` | the caller | Reply to `set_clip_seconds`. Carries the snapped value. |
 | `seed_accepted` | the caller | Reply to `set_seed`. |
 | `autoplay_accepted` | the caller | Reply to `set_autoplay`. |
@@ -200,7 +214,7 @@ A rejected command has no effect and is answered by a broadcast
   │ Valid: enqueue, set_clip_seconds, set_seed, reset, get_queue, │
   │        get_state; set_canvas while the queue is empty;        │
   │        play once a clip is ready                              │
-  │ Builds run in the background whenever the queue has work      │
+  │ Builds consume the generation queue in the background        │
   └───────────────────────────┬───────────────────────────────────┘
                               v  play
   ┌───────────────────────────────────────────────────────────────┐
@@ -286,10 +300,11 @@ background coroutines *concurrent* with `run()`, so:
   single handle to wait on;
 - refusals and accepts answer immediately, even mid-build and mid-play.
 
-**Built clips live in host memory.** A ready clip is about 1 GB of uint8 pixels
-at the 16:9 canvas and the longest length, and the queue can hold
-`inference.queue_size` of them — size `resources.memory` in the manifest
-together with that knob.
+**Built clips live in host memory.** A built clip is about 1 GB of uint8
+pixels at the 16:9 canvas and the longest length, and the playout queue can
+hold `inference.queue_size` of them — size `resources.memory` in the manifest
+together with that knob. Generation pauses while the playout queue is full,
+which is what keeps that budget a hard bound.
 
 **Refusals are broadcast, not raised.** A handler returns only the message its
 annotation names and reports failure by broadcasting `command_error`. A raised

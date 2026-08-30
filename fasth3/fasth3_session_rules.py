@@ -12,28 +12,36 @@ from __future__ import annotations
 _ALWAYS = ("set_clip_seconds", "set_seed", "set_autoplay", "get_queue", "get_state", "reset")
 
 
-def valid_commands(*, playing: bool, queued: int, ready: int, capacity: int) -> list[str]:
+def valid_commands(
+    *,
+    playing: bool,
+    generation_queued: int,
+    generation_capacity: int,
+    playout_queued: int,
+) -> list[str]:
     """Name every command the session would accept in this state.
 
     Args:
         playing: A clip is streaming on the output tracks.
-        queued: Clips in the queue, built and still generating alike.
-        ready: Clips in the queue that are built and playable.
-        capacity: Most clips the queue holds.
+        generation_queued: Clips waiting in the generation queue.
+        generation_capacity: Most clips the generation queue holds.
+        playout_queued: Built clips waiting in the playout queue.
     """
     commands = list(_ALWAYS)
-    if queued < capacity:
+    if generation_queued < generation_capacity:
         commands.append("enqueue")
-    if queued > 0:
+    if generation_queued > 0 or playout_queued > 0:
         commands.append("pop")
+        commands.append("move")
     if playing:
         commands.append("stop")
     else:
-        if ready > 0:
+        if playout_queued > 0:
             commands.append("play")
         # The canvas fixes the video track's geometry and the shape queued
-        # clips were built at, so it can only change while both are empty.
-        if queued == 0:
+        # clips were built at, so it can only change while everything is
+        # empty.
+        if generation_queued == 0 and playout_queued == 0:
             commands.append("set_canvas")
     return sorted(commands)
 

@@ -92,31 +92,39 @@ open-source authoring layer; docs at
   Describe only what a client observes on the wire; never kernels, caches,
   config keys, or GPU counts.
 
-## 3. The client contract (what the queue is)
+## 3. The client contract (the two queues)
 
 Authoritative detail in [`fasth3/README.md`](../../fasth3/README.md) and
-`fasth3_types.py`; the shape in brief:
+`fasth3_types.py`; the shape in brief. A clip passes three stages: enqueued
+(**generation queue**), built (**playout queue**), consumed (played, or
+popped).
 
-- `enqueue(prompt, metadata, seed?, seconds?)` → immediate `clip_queued`
-  reply carrying the full **`ClipInfo`** struct: `clip_id` (UUID), `prompt`,
-  `metadata` (opaque, echoed untouched — the client's correlation channel),
-  `frames`, `seconds`, `seed`, `ready`. Omitted seed → the session's
-  advancing default (explicit seeds leave it untouched); omitted seconds →
-  the session default, snapped to the `17n+5` grid. Queue is bounded
-  (`inference.queue_size`, default 10); each built clip is ~1 GB of host
-  RAM.
-- Builds run oldest-first on their own, one at a time, also while a clip
-  plays. Readiness broadcasts on `queue_update` (always the whole queue).
-- `play` (oldest ready) / `play(clip_id)`; playing consumes the entry;
-  time-to-first-frame ~0.25 s since the clip is prebuilt. On finish: flush
-  to black, `clip_finished`, hold. `set_autoplay(true)` = standing play of
-  the oldest ready clip whenever nothing is playing (then `stop` acts as a
-  skip). `pop(clip_id)` evicts a queued clip to free its slot (an in-flight
-  build is discarded on completion). `stop` cuts playout in ~0.13 s;
-  `reset` drops everything and restores defaults. `set_clip_seconds`,
-  `set_seed`, `set_canvas` (locked while clips exist), `get_queue`,
-  `get_state` complete the surface; `state_update.valid_commands` tells a
-  client exactly what is legal right now (`fasth3_session_rules.py`).
+- `enqueue(prompt, metadata, seed?, seconds?, position?)` → immediate
+  `clip_queued` reply carrying the full **`ClipInfo`** struct: `clip_id`
+  (UUID), `prompt`, `metadata` (opaque, echoed untouched — the client's
+  correlation channel), `frames`, `seconds`, `seed`, `ready` (`false` =
+  generation queue, `true` = playout queue). The clip enters the generation
+  queue at `position` (0 = next build; omitted = back). Omitted seed → the
+  session's advancing default (explicit seeds leave it untouched); omitted
+  seconds → the session default, snapped to the `17n+5` grid. Bounds:
+  `inference.generation_queue_size` (default 20) prompts waiting;
+  `inference.queue_size` (default 10) built clips, each ~1 GB of host RAM.
+- **Builds consume the generation queue front-first, always**, one at a
+  time, also while a clip plays — pausing only while the playout queue is
+  full. A finished build crosses to the playout queue's back, announced by
+  `clip_generated` (+ `queue_update`, which always carries both queues in
+  full, front first).
+- **The playout queue is the client's to schedule**: bare `play` (or
+  autoplay, toggleable) takes the *front*; `play(clip_id)` any built clip;
+  `move(clip_id, position)` reorders within either queue; `pop(clip_id)`
+  removes from either (an in-flight build is discarded on completion).
+  Playing consumes the entry; time-to-first-frame ~0.25 s since the clip is
+  prebuilt. On finish: flush to black, `clip_finished`, hold. `stop` cuts
+  playout in ~0.13 s; `reset` drops both queues and restores defaults.
+  `set_clip_seconds`, `set_seed`, `set_canvas` (locked while clips exist),
+  `get_queue`, `get_state` complete the surface;
+  `state_update.valid_commands` tells a client exactly what is legal right
+  now (`fasth3_session_rules.py`).
 - Every clip-referencing message embeds the whole `ClipInfo`. On the wire it
   travels as a plain mapping (the transport encoder accepts only
   JSON-representable values); the `ClipInfo` dataclass in `fasth3_types.py`
@@ -124,10 +132,14 @@ Authoritative detail in [`fasth3/README.md`](../../fasth3/README.md) and
   `ClipEntry.snapshot()` in `fasth3_queue.py` is the single producer —
   a test pins the two together.
 
-Design decisions worth knowing before "improving" things: playout deliberately
-never auto-advances without autoplay; the playing clip is not in the queue
-(pop-on-play), so `pop` cannot touch it and `stop` is the only cut; handlers
-return exactly their annotated message type or nothing; `state_update` is one
+Design decisions worth knowing before "improving" things: the model never
+reorders a queue on its own — `position`, `move`, and `pop` are the client's
+levers, and a build crossing queues is the only movement the model makes;
+playout deliberately never auto-advances without autoplay; the playing clip
+is in neither queue (pop-on-play), so `pop` cannot touch it and `stop` is the
+only cut; who or what a clip is *for* travels only in the metadata echo,
+keeping the model ignorant of client-side scheduling policy; handlers return
+exactly their annotated message type or nothing; `state_update` is one
 complete snapshot built in one place so `get_state`, the connect greeting and
 the broadcast can never disagree; audio is downmixed to mono int16 48 kHz in
 the backend because the transport downmixes anyway and stereo would corrupt

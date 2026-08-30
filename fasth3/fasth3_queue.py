@@ -1,11 +1,16 @@
-"""The clip queue: every generation a client has asked for, in order.
+"""The clip queues: what a session holds, in order, at each stage.
 
-Pure bookkeeping — no torch, no fastvideo, no runtime imports — so the queue's
-behaviour is testable on any machine. ``fasth3.py`` owns when entries move
-(builds are submitted and applied on the model's event loop); this module owns
-what an entry is and what the queue guarantees: bounded capacity, stable order,
-and one wire form (`ClipInfo` in ``fasth3_types.py``) reported everywhere a
-clip is mentioned.
+A clip passes three stages: enqueued (waiting in the **generation queue**),
+built (waiting in the **playout queue**), and consumed (playing removed it).
+Both queues are instances of one positional container, :class:`ClipQueue` —
+bounded, ordered, with insert-at-position and move — and ``fasth3.py`` owns
+when entries cross between them (a finished build leaves generation and joins
+the playout tail).
+
+Pure bookkeeping — no torch, no fastvideo, no runtime imports — so queue
+behaviour is testable on any machine. `ClipInfo` in ``fasth3_types.py`` is
+the wire form every mention of a clip carries; ``ClipEntry.snapshot()`` here
+is its single producer.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ import fasth3_clip_plan as clip_plan
 
 @dataclass
 class ClipEntry:
-    """One enqueued generation, from request to built payload.
+    """One clip, from request to built payload.
 
     The client-facing fields are frozen at enqueue time: the prompt and
     metadata as the client sent them, and the frame count and seed as the
@@ -69,17 +74,27 @@ class ClipEntry:
         }
 
 
+def new_entry(*, prompt: str, metadata: str, frames: int, seed: int) -> ClipEntry:
+    """Mint one entry with a fresh UUID; `enqueue` is its only caller."""
+    return ClipEntry(
+        clip_id=str(uuid.uuid4()),
+        prompt=prompt,
+        metadata=metadata,
+        frames=frames,
+        seed=seed,
+    )
+
+
 @dataclass
 class ClipQueue:
-    """A bounded, ordered queue of :class:`ClipEntry`.
+    """A bounded, ordered, position-addressable queue of :class:`ClipEntry`.
 
-    Builds run through the queue front to back, so ready entries always form
-    a prefix of the pending ones. Order is enqueue order, with one exception:
-    an entry enqueued with ``build_next`` enters at the front of the unbuilt
-    segment rather than the back, and once placed, no entry ever moves.
-    Capacity comes from the deployment config (``inference.queue_size``) —
-    every entry can hold a fully built clip in host memory, so the bound is
-    also the memory budget.
+    One container serves both stages: the generation queue (builds consume
+    the front) and the playout queue (bare `play` and autoplay take the
+    front). Positions are explicit — `add` takes one, `move` changes one —
+    and nothing reorders behind the client's back. Capacity comes from the
+    deployment config; for the playout queue every entry holds a fully built
+    clip in host memory, so that bound is also the memory budget.
     """
 
     capacity: int
@@ -89,18 +104,6 @@ class ClipQueue:
         if self.capacity < 1:
             raise ValueError(f"queue capacity must be positive, got {self.capacity}")
 
-    def _front_of_unbuilt(self) -> int:
-        """The index where a `build_next` entry enters: the unbuilt segment's front.
-
-        Ready and building entries keep their positions — a build in flight
-        cannot be displaced — so the earliest position an unbuilt entry can
-        take is right behind them.
-        """
-        for index, entry in enumerate(self._entries):
-            if not entry.ready and not entry.building:
-                return index
-        return len(self._entries)
-
     def __len__(self) -> int:
         return len(self._entries)
 
@@ -109,71 +112,57 @@ class ClipQueue:
 
     @property
     def full(self) -> bool:
-        """Whether another enqueue would exceed the capacity."""
+        """Whether another add would exceed the capacity."""
         return len(self._entries) >= self.capacity
 
-    def enqueue(
-        self,
-        *,
-        prompt: str,
-        metadata: str,
-        frames: int,
-        seed: int,
-        build_next: bool = False,
-    ) -> ClipEntry:
-        """Add one generation request and return its entry.
+    def add(self, entry: ClipEntry, position: int | None = None) -> int:
+        """Insert *entry* and return the index it landed at.
 
-        Appended to the back by default. With ``build_next`` the entry enters
-        at the front of the unbuilt segment instead — behind every ready or
-        building entry, ahead of everything still waiting — so it is the next
-        build the scheduler picks. Two ``build_next`` enqueues in a row land
-        newest-first.
+        ``position`` of ``None`` appends; anything else is clamped into
+        ``0..len``, 0 being the front.
 
         Raises:
             ValueError: If the queue is already at capacity.
         """
         if self.full:
             raise ValueError(f"the queue is full ({self.capacity} clips)")
-        entry = ClipEntry(
-            clip_id=str(uuid.uuid4()),
-            prompt=prompt,
-            metadata=metadata,
-            frames=frames,
-            seed=seed,
+        index = (
+            len(self._entries)
+            if position is None
+            else max(0, min(int(position), len(self._entries)))
         )
-        if build_next:
-            self._entries.insert(self._front_of_unbuilt(), entry)
-        else:
-            self._entries.append(entry)
-        return entry
+        self._entries.insert(index, entry)
+        return index
+
+    def move(self, entry: ClipEntry, position: int) -> int:
+        """Reposition *entry* and return the index it landed at (clamped)."""
+        if entry not in self:
+            raise ValueError("the clip is not in this queue")
+        self._entries = [existing for existing in self._entries if existing is not entry]
+        index = max(0, min(int(position), len(self._entries)))
+        self._entries.insert(index, entry)
+        return index
 
     def get(self, clip_id: str) -> ClipEntry | None:
-        """The entry with *clip_id*, or ``None`` when no queued clip has it."""
+        """The entry with *clip_id*, or ``None`` when this queue lacks it."""
         for entry in self._entries:
             if entry.clip_id == clip_id:
                 return entry
         return None
 
+    def head(self) -> ClipEntry | None:
+        """The front entry, or ``None`` when the queue is empty."""
+        return self._entries[0] if self._entries else None
+
     def next_to_build(self) -> ClipEntry | None:
-        """The oldest entry that is neither built nor being built."""
+        """The front-most entry no build is running for."""
         for entry in self._entries:
-            if not entry.ready and not entry.building:
+            if not entry.building:
                 return entry
         return None
-
-    def next_ready(self) -> ClipEntry | None:
-        """The oldest entry that is built and playable."""
-        for entry in self._entries:
-            if entry.ready:
-                return entry
-        return None
-
-    def ready_count(self) -> int:
-        """How many queued clips are built and playable right now."""
-        return sum(1 for entry in self._entries if entry.ready)
 
     def remove(self, entry: ClipEntry) -> None:
-        """Take *entry* out of the queue; playing a clip consumes its entry."""
+        """Take *entry* out; consuming a clip (build done, played, popped)."""
         self._entries = [existing for existing in self._entries if existing is not entry]
 
     def clear(self) -> int:
@@ -183,8 +172,8 @@ class ClipQueue:
         return cleared
 
     def snapshot(self) -> list[dict[str, Any]]:
-        """Every entry's wire form, oldest first — the `queue_update` payload."""
+        """Every entry's wire form, front first — one queue of `queue_update`."""
         return [entry.snapshot() for entry in self._entries]
 
 
-__all__ = ["ClipEntry", "ClipQueue"]
+__all__ = ["ClipEntry", "ClipQueue", "new_entry"]

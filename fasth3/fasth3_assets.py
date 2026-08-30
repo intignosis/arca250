@@ -48,6 +48,7 @@ class FastH3Config:
     seed: int
     num_inference_steps: int
     queue_size: int
+    generation_queue_size: int
     warmup_aspects: tuple[str, ...]
     warmup_frames: tuple[int, ...]
     inference: dict[str, Any]
@@ -81,6 +82,12 @@ def load_config(config_path: Path | None) -> FastH3Config:
     if queue_size < 1:
         raise ValueError(f"inference.queue_size must be positive, got {queue_size}")
 
+    generation_queue_size = int(inference.get("generation_queue_size", 20))
+    if generation_queue_size < 1:
+        raise ValueError(
+            f"inference.generation_queue_size must be positive, got {generation_queue_size}"
+        )
+
     clip_frames = clip_plan.frames_for_seconds(
         float(inference.get("clip_seconds", clip_plan.MAX_SECONDS))
     )
@@ -93,6 +100,7 @@ def load_config(config_path: Path | None) -> FastH3Config:
         # five points and exactly four forwards.
         num_inference_steps=int(inference.get("num_inference_steps", 5)),
         queue_size=queue_size,
+        generation_queue_size=generation_queue_size,
         warmup_aspects=tuple(str(a) for a in (inference.get("warmup_aspects") or [aspect])),
         warmup_frames=_parse_warmup_lengths(inference.get("warmup_lengths"), clip_frames),
         inference=inference,

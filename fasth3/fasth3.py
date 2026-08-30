@@ -2,12 +2,15 @@
 
 FastH3 is MiniMax-H3 distilled to four transformer forwards, and on a few
 Blackwell GPUs it builds video about as fast as the video plays. This model
-puts a queue in front of that: clients `enqueue` generation requests — a prompt
-plus opaque metadata, each answered with a UUID — builds run through the queue
-in order, and playback is a separate, explicit step. `play` streams one built
-clip on `main_video` and `main_audio`; when it ends (or `stop` cuts it) the
-stream flushes to black and holds until the next `play`. Nothing plays on its
-own.
+puts two queues in front of that: clients `enqueue` generation requests — a
+prompt plus opaque metadata, each answered with a UUID — into the **generation
+queue**, which builds consume front-first on their own; each finished clip
+crosses into the **playout queue** (`clip_generated`), where playback is a
+separate, explicit step. `play` streams one built clip on `main_video` and
+`main_audio`; when it ends (or `stop` cuts it) the stream flushes to black and
+holds until the next `play`. Nothing plays on its own unless autoplay is on,
+and `enqueue`'s `position`, `move`, and `pop` give a client full control of
+both queues' order.
 
 The unit of work is a whole clip, not a frame, which is why this subclasses
 ``ReactorModel`` and owns its own ``run()`` loop rather than using
@@ -17,7 +20,7 @@ while a clip is being built or played.
 
 Layout:
   * ``fasth3_types.py``         — everything a client sees (tracks, `ClipInfo`, messages).
-  * ``fasth3_queue.py``         — the bounded clip queue and its entries.
+  * ``fasth3_queue.py``         — the generation and playout queues and their entries.
   * ``fasth3_backend.py``       — the FastVideo engine and its worker thread.
   * ``fasth3_assets.py``        — config parsing and weights validation.
   * ``fasth3_clip_plan.py``     — clip geometry (lengths, frame counts, canvases).
@@ -47,7 +50,7 @@ import fasth3_clip_plan as clip_plan
 import fasth3_session_rules as session_rules
 from fasth3_assets import load_config, require_weights, resolve_model_path
 from fasth3_backend import OUTPUT_SAMPLE_RATE, ClipJob, FastH3Backend
-from fasth3_queue import ClipEntry, ClipQueue
+from fasth3_queue import ClipEntry, ClipQueue, new_entry
 from fasth3_types import (
     MAX_METADATA_CHARS,
     MAX_PROMPT_CHARS,
@@ -55,7 +58,9 @@ from fasth3_types import (
     CanvasAccepted,
     ClipFailed,
     ClipFinished,
+    ClipGenerated,
     ClipLengthAccepted,
+    ClipMoved,
     ClipPopped,
     ClipQueued,
     ClipStarted,
@@ -155,11 +160,13 @@ class FastH3(ReactorModel):
         # Off by default: playback waits for an explicit `play`.
         self._autoplay: bool = False
 
-        # The queue, and the playout lifecycle around it. `_play_request` is a
-        # clip taken off the queue and armed for the run loop; `_playing` is
-        # the clip whose frames are on the wire; `_stop_playout` asks the
-        # emitter to cut it.
-        self._queue = ClipQueue(self.config.queue_size)
+        # The two queues, and the playout lifecycle around them: builds
+        # consume `_generation` from the front and finished clips join the
+        # back of `_playout`. `_play_request` is a clip taken off the playout
+        # queue and armed for the run loop; `_playing` is the clip whose
+        # frames are on the wire; `_stop_playout` asks the emitter to cut it.
+        self._generation = ClipQueue(self.config.generation_queue_size)
+        self._playout = ClipQueue(self.config.queue_size)
         self._play_request: ClipEntry | None = None
         self._playing: ClipEntry | None = None
         self._stop_playout: bool = False
@@ -197,15 +204,17 @@ class FastH3(ReactorModel):
             height=height,
             playing=current is not None,
             playing_clip_id=current.clip_id if current is not None else None,
-            queued=len(self._queue),
-            queue_capacity=self._queue.capacity,
+            generation_queued=len(self._generation),
+            generation_capacity=self._generation.capacity,
+            playout_queued=len(self._playout),
+            playout_capacity=self._playout.capacity,
             clips_played=self._clips_played,
             seconds_sent=round(self._seconds_sent, 2),
             valid_commands=session_rules.valid_commands(
                 playing=current is not None,
-                queued=len(self._queue),
-                ready=self._queue.ready_count(),
-                capacity=self._queue.capacity,
+                generation_queued=len(self._generation),
+                generation_capacity=self._generation.capacity,
+                playout_queued=len(self._playout),
             ),
         )
 
@@ -215,7 +224,12 @@ class FastH3(ReactorModel):
 
     async def _send_queue_update(self) -> None:
         """Broadcast the queue's contents to every connected client."""
-        await self.send(QueueUpdate(clips=self._queue.snapshot()))
+        await self.send(
+            QueueUpdate(
+                generation=self._generation.snapshot(),
+                playout=self._playout.snapshot(),
+            )
+        )
 
     async def _refuse(self, command: str, reason: str) -> None:
         """Reject a command: tell every client, and leave its reply bodyless.
@@ -248,7 +262,8 @@ class FastH3(ReactorModel):
         if self._build is not None:
             _entry, job, _submitted = self._build
             job.cancelled = True
-        self._queue.clear()
+        self._generation.clear()
+        self._playout.clear()
 
     @connected
     async def on_connect(self, client: ClientInfo) -> None:
@@ -258,15 +273,23 @@ class FastH3(ReactorModel):
         this, and a late joiner needs it without replaying every command.
         """
         await client.send(self._snapshot())
-        await client.send(QueueUpdate(clips=self._queue.snapshot()))
+        await client.send(
+            QueueUpdate(
+                generation=self._generation.snapshot(),
+                playout=self._playout.snapshot(),
+            )
+        )
 
     # ------------------------------------------------------------- commands
 
     @event(
         name="enqueue",
         description=(
-            "Queue one clip generation. The prompt is what the clip will show; "
-            "the metadata is an opaque string echoed back on every message that "
+            "Queue one clip generation. The clip enters the generation queue "
+            "(at `position`, or the back), builds when its turn comes, and "
+            "then joins the back of the playout queue, announced by "
+            "`clip_generated`. The prompt is what the clip will show; the "
+            "metadata is an opaque string echoed back on every message that "
             "references the clip, for frontends to carry their own tracking "
             "data. The clip's canvas is the session's; its length is the "
             "`seconds` passed here (snapped to what the model can produce) or "
@@ -322,15 +345,15 @@ class FastH3(ReactorModel):
                 "first build."
             ),
         ),
-        build_next: bool = InputField(
-            default=False,
+        position: int | None = InputField(
+            default=None,
+            ge=0,
             description=(
-                "Build this clip ahead of the clips already waiting: it "
-                "enters the queue in front of every clip whose build has not "
-                "started, instead of at the back. Clips already built or "
-                "building are unaffected, and two `build_next` enqueues in a "
-                "row land newest-first. `queue_update` reports the resulting "
-                "order; playback still follows queue order."
+                "Where the clip enters the generation queue: 0 is the front "
+                "(the next build), larger values count back from there, and "
+                "anything past the end — or omitted — appends. The clip "
+                "already building is unaffected either way. `queue_update` "
+                "reports the resulting order."
             ),
         ),
     ) -> ClipQueued:
@@ -339,10 +362,11 @@ class FastH3(ReactorModel):
         if not prompt:
             await self._refuse("enqueue", "The prompt is empty; a clip needs one.")
             return None
-        if self._queue.full:
+        if self._generation.full:
             await self._refuse(
                 "enqueue",
-                f"The queue is full ({self._queue.capacity} clips); play or `reset` first.",
+                f"The generation queue is full ({self._generation.capacity} "
+                "clips); `pop` one or wait for a build to finish.",
             )
             return None
         if not isinstance(seed, int):
@@ -354,13 +378,11 @@ class FastH3(ReactorModel):
             if isinstance(seconds, (int, float))
             else self._clip_frames
         )
-        entry = self._queue.enqueue(
-            prompt=prompt,
-            metadata=metadata,
-            frames=frames,
-            seed=seed,
-            # False on the wire; the InputField sentinel when called directly.
-            build_next=build_next is True,
+        entry = new_entry(prompt=prompt, metadata=metadata, frames=frames, seed=seed)
+        self._generation.add(
+            entry,
+            # None on the wire; the InputField sentinel when called directly.
+            position if isinstance(position, int) else None,
         )
         await self._send_queue_update()
         await self._send_state_update()
@@ -369,13 +391,13 @@ class FastH3(ReactorModel):
     @event(
         name="play",
         description=(
-            "Play one built clip from the queue. Blank `clip_id` plays the "
-            "oldest ready clip; a UUID plays that specific clip. Playing "
-            "consumes the entry: it leaves the queue, `clip_started` marks its "
-            "first frames, and when it ends the stream holds on black until "
-            "the next `play`. Emits `queue_update` and `state_update`, or "
+            "Play one clip from the playout queue. Blank `clip_id` plays the "
+            "front clip; a UUID plays that specific one. Playing consumes "
+            "the entry: it leaves the queue, `clip_started` marks its first "
+            "frames, and when it ends the stream holds on black until the "
+            "next `play`. Emits `queue_update` and `state_update`, or "
             "`command_error` when a clip is already playing, the id is "
-            "unknown, or the clip is not ready yet."
+            "unknown, or the clip is still generating."
         ),
     )
     async def play(
@@ -383,8 +405,8 @@ class FastH3(ReactorModel):
         clip_id: str = InputField(
             default="",
             description=(
-                "UUID of the clip to play, from `clip_queued` or `queue_update`. "
-                "Blank plays the oldest clip that is ready."
+                "UUID of the clip to play, from `clip_generated` or "
+                "`queue_update`. Blank plays the playout queue's front clip."
             ),
         ),
     ) -> None:
@@ -393,25 +415,27 @@ class FastH3(ReactorModel):
             await self._refuse("play", "A clip is already playing; send `stop` first.")
             return
         if clip_id:
-            entry = self._queue.get(clip_id)
+            entry = self._playout.get(clip_id)
             if entry is None:
-                await self._refuse("play", f"No queued clip has id {clip_id!r}.")
-                return
-            if not entry.ready:
-                await self._refuse(
-                    "play",
-                    "That clip is still generating; wait for `queue_update` to report it ready.",
-                )
+                if self._generation.get(clip_id) is not None:
+                    await self._refuse(
+                        "play",
+                        "That clip is still generating; `clip_generated` will "
+                        "announce it entering the playout queue.",
+                    )
+                else:
+                    await self._refuse("play", f"No queued clip has id {clip_id!r}.")
                 return
         else:
-            entry = self._queue.next_ready()
+            entry = self._playout.head()
             if entry is None:
                 await self._refuse(
                     "play",
-                    "No clip is ready to play; `enqueue` one and wait for `queue_update`.",
+                    "The playout queue is empty; `enqueue` a clip and wait "
+                    "for `clip_generated`.",
                 )
                 return
-        self._queue.remove(entry)
+        self._playout.remove(entry)
         self._play_request = entry
         await self._send_queue_update()
         await self._send_state_update()
@@ -419,10 +443,10 @@ class FastH3(ReactorModel):
     @event(
         name="pop",
         description=(
-            "Remove one clip from the queue by its UUID, freeing its slot for "
-            "something else. Works on built and still-generating clips alike; "
-            "a build already running for it is discarded when it completes. "
-            "The clip that is playing is not in the queue — `stop` is the "
+            "Remove one clip by its UUID from whichever queue holds it, "
+            "freeing its slot. Works on generating and built clips alike; a "
+            "build already running for it is discarded when it completes. "
+            "The clip that is playing is in neither queue — `stop` is the "
             "command that cuts it. Emits `clip_popped`, `queue_update` and "
             "`state_update`, or `command_error` when no queued clip has that "
             "id."
@@ -436,7 +460,9 @@ class FastH3(ReactorModel):
         ),
     ) -> ClipPopped:
         """Take one clip out of the queue and free its slot."""
-        entry = self._queue.get(clip_id) if clip_id else None
+        entry = None
+        if clip_id:
+            entry = self._generation.get(clip_id) or self._playout.get(clip_id)
         if entry is None:
             reason = (
                 f"No queued clip has id {clip_id!r}."
@@ -445,13 +471,62 @@ class FastH3(ReactorModel):
             )
             await self._refuse("pop", reason)
             return None
-        self._queue.remove(entry)
+        self._generation.remove(entry)
+        self._playout.remove(entry)
         if self._build is not None and self._build[0] is entry:
             _entry, job, _submitted = self._build
             job.cancelled = True
         await self._send_queue_update()
         await self._send_state_update()
         return ClipPopped(clip=entry.snapshot())
+
+    @event(
+        name="move",
+        description=(
+            "Reposition one clip within the queue that holds it — the "
+            "generation queue for a clip still to build, the playout queue "
+            "for a built one; clips never move between queues except by "
+            "building. `position` 0 is the front: the next build, or what "
+            "bare `play` and autoplay take next. Values past the end mean "
+            "the back. Replies `clip_moved` with the queue and the resulting "
+            "position, and emits `queue_update`; `command_error` when no "
+            "queued clip has that id."
+        ),
+    )
+    async def move(
+        self,
+        clip_id: str = InputField(
+            default="",
+            description="UUID of the queued clip to move, from any clip-referencing message.",
+        ),
+        position: int = InputField(
+            default=0,
+            ge=0,
+            description="Target position in the clip's queue, 0 = front; clamped to the end.",
+        ),
+    ) -> ClipMoved:
+        """Reposition a clip within its queue."""
+        if not isinstance(position, int):
+            # The InputField sentinel when called directly.
+            position = 0
+        entry = self._generation.get(clip_id) if clip_id else None
+        queue, name = (
+            (self._generation, "generation") if entry is not None else (None, "")
+        )
+        if entry is None and clip_id:
+            entry = self._playout.get(clip_id)
+            queue, name = self._playout, "playout"
+        if entry is None:
+            reason = (
+                f"No queued clip has id {clip_id!r}."
+                if clip_id
+                else "Pass the `clip_id` of the queued clip to move."
+            )
+            await self._refuse("move", reason)
+            return None
+        landed = queue.move(entry, position)
+        await self._send_queue_update()
+        return ClipMoved(clip=entry.snapshot(), queue=name, position=landed)
 
     @event(
         name="stop",
@@ -476,15 +551,18 @@ class FastH3(ReactorModel):
     @event(
         name="get_queue",
         description=(
-            "Return the queue's contents: every clip's UUID, prompt, metadata, "
-            "length in frames and seconds, seed, and whether it is built and "
-            "ready to play. The same payload the model broadcasts as "
+            "Return both queues' contents — `generation` (waiting to build) "
+            "and `playout` (built, playable) — every clip as its full "
+            "structure. The same payload the model broadcasts as "
             "`queue_update`. Valid at any time."
         ),
     )
     async def get_queue(self) -> QueueUpdate:
         """Answer with the same payload `queue_update` broadcasts."""
-        return QueueUpdate(clips=self._queue.snapshot())
+        return QueueUpdate(
+            generation=self._generation.snapshot(),
+            playout=self._playout.snapshot(),
+        )
 
     @event(
         name="set_clip_seconds",
@@ -550,10 +628,11 @@ class FastH3(ReactorModel):
     @event(
         name="set_autoplay",
         description=(
-            "Turn autoplay on or off. On, the oldest ready clip starts on its "
-            "own whenever nothing is playing — right after a clip finishes, or "
-            "the moment a build completes while the stream is idle — so a "
-            "steadily fed queue plays through without a `play` per clip. Off "
+            "Turn autoplay on or off. On, the playout queue's front clip "
+            "starts on its own whenever nothing is playing — right after a "
+            "clip finishes, or the moment a build completes while the stream "
+            "is idle — so a steadily fed queue plays through without a "
+            "`play` per clip. Off "
             "(the default), the stream holds on black until an explicit "
             "`play`. Takes effect immediately and lasts for the session. Emits "
             "`autoplay_accepted` and `state_update`."
@@ -564,7 +643,7 @@ class FastH3(ReactorModel):
         enabled: bool = InputField(
             default=False,
             description=(
-                "True plays ready clips on their own, oldest first; false "
+                "True plays the playout queue front-first on its own; false "
                 "holds the stream after each clip until `play`."
             ),
         ),
@@ -598,7 +677,11 @@ class FastH3(ReactorModel):
         ),
     ) -> CanvasAccepted:
         """Set the session's canvas; refused while any clip depends on the old one."""
-        if self._current_clip() is not None or len(self._queue) > 0:
+        if (
+            self._current_clip() is not None
+            or len(self._generation) > 0
+            or len(self._playout) > 0
+        ):
             await self._refuse(
                 "set_canvas",
                 "The canvas is fixed while clips are queued or playing; "
@@ -617,7 +700,7 @@ class FastH3(ReactorModel):
     @event(
         name="reset",
         description=(
-            "Return every condition to its default, drop every queued clip, "
+            "Return every condition to its default, drop both queues' clips, "
             "and clear the output tracks. A clip that is playing is cut, with "
             "a `clip_stopped` to mark it. Valid at any time. Replies "
             "`session_reset` and emits `queue_update` and `state_update`."
@@ -627,7 +710,7 @@ class FastH3(ReactorModel):
         """Clear the session back to its defaults."""
         current = self._current_clip()
         was_playing = current is not None
-        cleared = self._queue.clear()
+        cleared = self._generation.clear() + self._playout.clear()
         # A pending play request is a clip already off the queue; dropping it
         # here counts it with the cleared ones. A clip mid-play is cut by the
         # playout loop, which owns its `clip_stopped`.
@@ -691,11 +774,12 @@ class FastH3(ReactorModel):
                     and self._play_request is None
                     and self._playing is None
                 ):
-                    # Autoplay is a standing `play`: whenever nothing is on the
-                    # tracks and a built clip waits, the oldest one starts.
-                    ready = self._queue.next_ready()
+                    # Autoplay is a standing `play`: whenever nothing is on
+                    # the tracks and the playout queue has a front clip, it
+                    # starts.
+                    ready = self._playout.head()
                     if ready is not None:
-                        self._queue.remove(ready)
+                        self._playout.remove(ready)
                         self._play_request = ready
                         await self._send_queue_update()
                         await self._send_state_update()
@@ -713,9 +797,12 @@ class FastH3(ReactorModel):
         """Apply a finished build and keep the worker fed, without blocking.
 
         Called from the idle loop and from every playout slice, so clips keep
-        building while another one streams. A finished build whose entry is no
-        longer in the queue — a `reset` or a session end removed it — is
-        discarded silently; the queue owns what exists.
+        building while another one streams. The generation queue is consumed
+        front first, always — paused only while the playout queue is full,
+        since a finished build needs a slot to land in (the pause is the
+        submit-time reservation). A finished build whose entry left the
+        generation queue — a `pop`, a `reset`, or a session end — is
+        discarded silently; the queues own what exists.
         """
         if self._build is not None:
             entry, job, submitted = self._build
@@ -723,30 +810,36 @@ class FastH3(ReactorModel):
                 return
             self._build = None
             entry.building = False
-            if job.cancelled or entry not in self._queue:
+            if job.cancelled or entry not in self._generation:
                 pass
             elif job.error is not None:
-                self._queue.remove(entry)
+                self._generation.remove(entry)
                 await self.send(ClipFailed(clip=entry.snapshot(), reason=str(job.error)))
                 await self._send_queue_update()
                 await self._send_state_update()
             else:
                 entry.video, entry.audio = job.result
+                # The submit-time reservation on the playout queue is what
+                # guarantees this add cannot overflow: only builds add here,
+                # and playing or `pop` can only have shrunk it since.
+                self._generation.remove(entry)
+                self._playout.add(entry)
                 logger.info(
-                    f"clip ready: {entry.clip_id} ({entry.frames}f) "
+                    f"clip generated: {entry.clip_id} ({entry.frames}f) "
                     f"{time.monotonic() - submitted:.2f}s after submit, "
-                    f"{len(self._queue)} queued"
+                    f"{len(self._generation)} generating, {len(self._playout)} playable"
                 )
+                await self.send(ClipGenerated(clip=entry.snapshot()))
                 await self._send_queue_update()
                 await self._send_state_update()
-        if self._build is None:
-            pending = self._queue.next_to_build()
+        if self._build is None and not self._playout.full:
+            pending = self._generation.next_to_build()
             if pending is not None:
                 height, width = self._canvas()
                 pending.building = True
                 logger.info(
                     f"clip build submitted: {pending.clip_id} ({pending.frames}f), "
-                    f"{len(self._queue)} queued"
+                    f"{len(self._generation)} generating"
                 )
                 self._build = (
                     pending,

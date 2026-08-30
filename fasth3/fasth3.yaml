@@ -18,12 +18,17 @@ inference:
   # frames is the ceiling.
   clip_seconds: 14.375
 
-  # Most clips the queue holds; `enqueue` is refused beyond it. Every entry can
-  # hold a fully built clip in host memory — about 1 GB of uint8 pixels at the
-  # 16:9 canvas and the longest length — so this bound is also the model's
-  # host-memory budget for built clips. Size `resources.memory` in the manifest
-  # together with it.
+  # Most built clips the playout queue holds; generation pauses while it is
+  # full. Every entry holds a fully built clip in host memory — about 1 GB of
+  # uint8 pixels at the 16:9 canvas and the longest length — so this bound is
+  # also the model's host-memory budget for built clips. Size
+  # `resources.memory` in the manifest together with it.
   queue_size: 10
+
+  # Most clips the generation queue holds; `enqueue` is refused beyond it.
+  # Entries here are prompts, not pixels, so the bound is about protecting the
+  # build backlog, not memory.
+  generation_queue_size: 20
 
   # Seed the first `enqueue` of a session uses; each one advances it by one.
   # `set_seed` overrides per session.
