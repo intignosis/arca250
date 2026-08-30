@@ -122,18 +122,10 @@ editing (rationale in the module docstring):
   prompt must re-describe the full setting/subjects/style from scratch;
 - the LLM is asked for < 750 chars but `_sanitize` **hard-truncates to 800**
   (`MAX_PROMPT_CHARS`, the model's server-side cap) because LLMs can't count;
-- the scene-prompt **format is distilled from the checkpoint's official
-  paper prompts**: `[Shot N]` segments with cut timestamps, `S1`/`S2`
-  character tags, a dedicated camera sentence (movement + amplitude +
-  speed), dialogue inside the `<d>[Language] ...</d>` speech marker,
-  explicit constraint assertions ("no readable signs, captions, or
-  logos"), and a closing diegetic soundscape;
-- **dialogue is specified with precision, not thinned out**: every line is
-  anchored to one shot and one visibly speaking character, carries a full
-  voice description (age, timbre, pace, delivery), gets ~2 words/second of
-  screen time with quiet around it, one voice at a time, the soundscape
-  stated to drop under the words, and clean marker text (no caps, no
-  onomatopoeia) — imprecise or crowded speech is what renders as gibberish;
+- fast-h3 renders audio including clear spoken language, so the prompt
+  asks for explicit quoted dialogue (who speaks, the exact words, the
+  voice's tone) whenever the idea implies speech, plus a soundscape clause
+  per scene — plain descriptive staging, no special markup;
 - **a single-scene generation always runs the maximum clip length**
   (enforced in code, not just asked of the LLM); short lengths are reserved
   for transition chunks inside multi-scene stories, and `seconds` are
@@ -221,8 +213,9 @@ thin translucent plates):
   group it reads `COMING UP scene 3/3` instead of repeating the title);
 - **top-left, while idle**: `UP NEXT <title> · by <author>` — or, with an
   empty queue, an invitation to type the chat command;
-- **top-right**: `READY n/capacity · GEN m` — the playout queue against its
-  capacity, and how many clips are still generating.
+- **top-right**: `QUEUE n` — everything queued, building and built alike
+  (a separate "ready" count just sits at zero whenever builds are the
+  bottleneck: built clips play the moment they land).
 
 Everything it shows is reconstructed from the wire — the metadata group tags
 (title, author, scene numbering) and the link's queue mirror — so it survives

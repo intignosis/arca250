@@ -19,28 +19,13 @@ actually behaves, so keep them intact when editing:
     in `fasth3_types.py`); the LLM is told 750 to leave headroom, and
     `_sanitize` hard-truncates anyway, because LLMs do not count characters
     reliably.
-  * **The scene-prompt format is distilled from the checkpoint's official
-    prompts** (the paper's `integrated_multimodal_description` examples):
-    a medium/style declaration first, `[Shot N]` segments with cut
-    timestamps ("At 00:04.500, the camera cuts to..."), characters tagged
-    `S1`/`S2` with a compact visual identity, the camera as its own
-    sentence with amplitude and speed, dialogue inside the
-    `<d>[Language] ...</d>` speech marker with the voice described,
-    explicit constraint assertions ("no readable signs, captions, or
-    logos"), and a closing diegetic soundscape. The model was trained on
-    that shape; prompts in it render dramatically better.
-  * **Dialogue is a precision problem, not a quantity problem.** Speech
-    renders exactly as well as it is specified: a line anchored to one shot
-    and one visibly speaking character, with a fully described voice
-    (age, timbre, pace, delivery), enough screen time (~2 words/second),
-    one voice at a time, the soundscape stated to drop under the words, and
-    clean marker text (plain words, no caps/onomatopoeia) comes out clear;
-    a vague, floating, or crowded line comes out as gibberish. The prompt's
-    DIALOGUE section encodes each of those as a requirement — tighten
-    staging before ever cutting content.
+  * **fast-h3 renders synchronized audio, spoken language included**, so
+    the prompt asks for explicit quoted dialogue (who speaks, the exact
+    words, the voice's tone) whenever the idea implies speech, and for a
+    brief soundscape clause — clips come out flat without them.
   * **Length policy: a single-clip generation always runs the maximum
     length** (the live `clip_seconds_max` from `state_update`), enforced in
-    code after validation — its 2-4 internal shots carry the variety. The
+    code after validation — long enough for the scene to breathe. The
     short end of the range is reserved for transition chunks inside
     multi-scene stories (an establishing cut, a reaction beat); content
     chunks run long.
@@ -91,65 +76,25 @@ HOW THE VIDEO MODEL WORKS (hard constraints):
   entire setting, subjects, lighting, palette, mood, and style — even when
   nothing changed from the previous scene. Anything you omit will vanish or
   mutate between scenes.
-- Each scene prompt must be under {target_chars} characters. Anything past
-  the limit is CUT OFF mid-sentence — and the cut lands on your closing
-  soundscape. Prefer cutting adjectives over subjects or setting.
-- Describe only what the camera sees and the microphone hears: no UI, no
-  scene numbers, nothing the model cannot show.
+- Each scene prompt must be under {target_chars} characters. This is a hard
+  limit; prefer cutting adjectives over cutting subjects or setting.
+- Each scene has a duration in seconds, between {min_seconds} and
+  {max_seconds}; the rules below say how to choose it.
+- The model renders picture AND sound, including clear spoken language.
+  When the idea involves someone speaking, write the dialogue out
+  explicitly and unambiguously — name who speaks and give the exact words
+  in quotes (e.g. the fisherman shouts "It's alive!") — and describe the
+  voice's tone. Do not paraphrase speech the viewer asked for.
+- End each scene prompt with one short clause of soundscape (ambience,
+  music mood, or effects) alongside any dialogue.
+- Describe only what the camera sees and the microphone hears: no text
+  overlays, no UI, no scene numbers, no camera jargon the model cannot show.
 
 {scene_count_rules}
 
-SCENE PROMPT FORMAT — the model was trained on prompts with this exact
-shape; follow it inside every scene prompt, compressed to the char budget:
-- Open with the medium and style, then the setting: "[Shot 1] <style>, 16:9
-  widescreen. <place, light, mood>." The style block above IS that medium.
-- Give each character a compact visual identity at first mention and a tag —
-  "the doughy dad in a too-tight polo (S1)" — then refer back by tag. At
-  most two speaking characters per scene.
-- Action first, in concrete physical beats; then the camera as its own
-  sentence with movement, angle, amplitude and speed: "The camera arcs
-  around the pair with medium amplitude at fast speed."
-- Split the scene into 2-4 shots. Every later shot opens "[Shot N] At
-  00:0X.000, the camera cuts to <view> as <action>", with timestamps spread
-  across the scene's duration.
-- State the constraints that must hold as explicit facts in the prompt:
-  "no readable signs, captions, or logos", "their hands stay empty
-  throughout" — the model honours what the prompt asserts.
-- End with one or two sentences of soundscape: the diegetic sounds
-  synchronized to the actions (foley, impacts, breathing, room tone), and
-  music only when wanted, named by instrument and mood.
-
-DIALOGUE — precision is what keeps speech intelligible. The model renders
-speech exactly as well as it is specified: a vague or crowded line comes out
-as gibberish, a precisely staged one comes out clear. Every line must
-satisfy ALL of this:
-- **Anchor it to a moment and a mouth.** The line belongs to one shot, at a
-  stated beat of that shot, spoken by one tagged character who is visibly
-  speaking — face toward camera, mouth unobstructed, mid-shot or closer at
-  that instant. Never let a line float over off-screen action.
-- **Specify the voice fully**: age, timbre, pace, and delivery, every time —
-  "S1 says in a deep, slow, clearly enunciated dad voice" — not just
-  "shouts". Calm, deliberate delivery renders best; say so explicitly.
-- **Give the words their time.** Speech runs about two words per second: fit
-  the line to the screen time around its beat (a 4-second beat carries ~8
-  words comfortably), and keep a breath of quiet before and after the line
-  rather than butting it against another line or a loud effect.
-- **One voice at a time.** One line per shot, one speaker per shot, never
-  overlapping speakers; an exchange spans shots, each reply in its own.
-  At most two speaking characters per scene.
-- **Keep the audio field clear under the line**: state that the soundscape
-  drops beneath the words (no crashes, stings, or crowd noise simultaneous
-  with speech) — effects and music live in the beats between lines.
-- **Write marker text the voice can actually say**, exactly:
-  S1 says in a deep, calm, clearly enunciated dad voice: <d>[English] Nobody
-  panic. Dad's got this.</d>
-  Plain words, natural word order, standard spelling and punctuation; no
-  ALL CAPS, no stretched spellings ("noooo"), no interjection chains, no
-  onomatopoeia — sound effects belong to the soundscape, never inside
-  <d>...</d>. Spoken words never appear outside the marker, and speech the
-  viewer explicitly asked for is kept verbatim.
-
 WRITING THE SCENE PROMPTS:
+- Be concrete and visual: subject, action, setting, camera angle and motion,
+  lighting, color palette, atmosphere, then the soundscape clause.
 - Strong nouns and verbs over piles of adjectives; vivid but precise.
 - Keep the viewer's idea recognizable — enhance it, do not replace it. The
   idea has already passed moderation before it reaches you; your job is
@@ -165,7 +110,7 @@ flatten a scene's fields to the top level.
 _MULTI_SCENE_RULES = """\
 HOW MANY SCENES, AND HOW LONG — two shapes; pick what the idea calls for:
 - ONE SCENE: a single clip that ALWAYS runs the full {max_seconds} seconds —
-  never shorter — with its 2-4 internal shots spread across that time.
+  never shorter — with room for the scene to build, land, and breathe.
   Right for a mood, a place, a single action or gag. When in doubt, this.
 - CHUNKED SHORT STORY: 3 to {max_chunks} chunks that read as one story with
   a setup, a development, and a payoff. Content chunks run 8-{max_seconds}
@@ -182,8 +127,7 @@ HOW MANY SCENES, AND HOW LONG — two shapes; pick what the idea calls for:
 _SINGLE_SCENE_RULES = """\
 HOW MANY SCENES, AND HOW LONG:
 - Exactly one scene, and it ALWAYS runs the full {max_seconds} seconds.
-  Distill the idea into one complete arc of 2-4 internal shots spread
-  across that time."""
+  Distill the idea into one complete arc that fills that time."""
 
 
 @dataclass(frozen=True)
@@ -394,18 +338,14 @@ def _sanitize(prompt: str) -> str:
     LLMs overshoot the character target they are given, and a blind cut at
     the cap ends the prompt mid-word — worse for the model than losing the
     final sentence. Over-long prompts are therefore cut at the last sentence
-    boundary (or speech-marker close) that fits; the mid-word cut remains
+    boundary that fits; the mid-word cut remains
     only as the last resort for a prompt written as one giant sentence.
     """
     collapsed = " ".join(prompt.split())
     if len(collapsed) <= MAX_PROMPT_CHARS:
         return collapsed.strip()
     head = collapsed[:MAX_PROMPT_CHARS]
-    boundary = max(
-        head.rfind(". "), head.rfind("! "), head.rfind("? "),
-        head.rfind(".</d>") + 4 if head.rfind(".</d>") != -1 else -1,
-        head.rfind("</d>") + 3 if head.rfind("</d>") != -1 else -1,
-    )
+    boundary = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
     if boundary > MAX_PROMPT_CHARS // 2:
         return head[: boundary + 1].strip()
     return head.strip()

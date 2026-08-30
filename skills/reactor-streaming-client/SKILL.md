@@ -47,7 +47,7 @@ YouTube API ┘      │            (LLM, fail-closed)            chat only)
                    │  24 fps video + 48 kHz mono audio (per clip, black between)
                    ▼
                  Pacer ── constant 24 fps clock; fills gaps with repeats+silence
-                   │  └── Overlay (READY n/cap · GEN m; NOW/COMING UP/UP NEXT)
+                   │  └── Overlay (QUEUE n; NOW/COMING UP/UP NEXT)
                    ▼
               StreamSink ─▶ rtmp (ffmpeg → Twitch/YouTube/Kick) | noop | yours
 ```
@@ -59,7 +59,7 @@ YouTube API ┘      │            (LLM, fail-closed)            chat only)
 | `reactor_link.py` | Everything `reactor_sdk`: connect/reconnect loop, both queue mirrors + `state_update` mirror, command sending, message fan-out, media → pacer, local orphan clearing. |
 | `director.py` | All scheduling: intake (cooldown, budget drop), moderate → upsample → positional enqueue; `run_playout` (the only sender of `play`); `run_idle` (filler); backpressure relief. |
 | `group_tag.py` | The metadata tag format + the shared policies: `pick_next` (play order), `viewer_insert_position` (build order), `is_generated`. |
-| `upsampler.py` | The LLM call, the system prompt (distilled from fast-h3's official paper prompts), scene validation, retries. |
+| `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length policy, chunk cap), retries. |
 | `moderator.py` | OpenAI moderations on its own endpoint; fail-closed. |
 | `pacer.py` | The 24 fps metronome between clip-shaped model output and the sink. |
 | `overlay/` | Per-frame status drawing; contract in `base.py`, shipped overlay in `status.py`. |
@@ -153,13 +153,11 @@ client changing:
   preset's style (`presets/<name>.json`, selected by `PRESET` — one JSON
   bundle per stream identity carrying the style block and the premade idle
   prompts; the shipped `default.json` is an original cartoon-sitcom world
-  with a crossover cast, and non-default presets stay untracked) and is
-  **distilled from fast-h3's official paper prompts**: `[Shot N]`
-  segments with cut timestamps, `S1`/`S2` character tags, a camera sentence
-  with amplitude and speed, dialogue inside `<d>[Language] ...</d>` with the
-  voice described, explicit constraint assertions, closing soundscape. Keep
-  its constraint rules intact — each traces to measured model behaviour
-  (rationale in the module docstring). Length policy: a single-scene
+  with a crossover cast, and non-default presets stay untracked). The brief
+  is plain descriptive staging: self-contained scenes, explicit quoted
+  dialogue with the speaker and voice tone named, a closing soundscape
+  clause. Keep its constraint rules intact — each traces to measured model
+  behaviour (rationale in the module docstring). Length policy: a single-scene
   generation always runs the maximum clip length (enforced in code); short
   lengths are transition chunks inside stories only. Up to 3 attempts per
   idea, each request-tagged (the gateway caches identical requests), then a
