@@ -400,6 +400,28 @@ to every capability in the image's `TORCH_CUDA_ARCH_LIST`. The two lists are
 kept in sync by a test. Watch the per-clip log line after any kernel or
 FastVideo bump: those two warnings coming back is the regression signature.
 
+### CPU quota and thread sizing (resolved)
+
+The same image and config that hit 1.16x on an unthrottled HGX B200 box
+built at 0.85x on the hosted pod — identical GPUs, identical NVSwitch
+fabric (`nvidia-smi topo -m` showed NV18 on every pair). The variable was
+CPU: with `requests.cpu: 8, limits.cpu: 32` on a 192-vCPU node, the cgroup
+throttled 38% of CFS periods, and runnable threads waited on quota ~3x
+longer than they ran. The stage split wears the signature: latent prep
+1.65 s vs 0.3 s (the CPU-bound stage eating the throttle directly) and
+denoise 9.5 s vs 5 s (NCCL host threads and kernel-launch threads stalling
+between all-to-alls — the fabric was never the problem).
+
+Two fixes, both in `reactor.yaml`: `resources.cpu` raised as far as the
+account's model CPU quota allows — the registry 429s any limit above the
+quota (64 today), so request and limit are both pinned there, the full
+quota guaranteed and none of it burstable — and `OMP_NUM_THREADS=8` in
+`runtime_env`, because `nproc` inside the container reports the whole
+node, so every torch process otherwise sizes its threadpools for 192
+cores and nine processes pile up against whatever the quota is. Diagnose
+a recurrence from inside the pod: `cpu.max` and the throttle counters in
+`cpu.stat` (cgroup v2), against the per-stage clip log line.
+
 ### Varied clip lengths and the recompile limit (resolved)
 
 Every distinct `seconds` value is a new compile shape. torch dynamo's

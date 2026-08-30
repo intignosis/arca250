@@ -5,7 +5,7 @@ model:
   name: fast-h3
   # Bare semver, no `v` prefix — the platform's release tag format; the
   # registration validator refuses a prefixed one.
-  version: 0.5.4
+  version: 0.5.5
   description: |
     Generate 768p video clips with synchronized audio from a queue of prompts.
     MiniMax-H3 (35B), distilled by FastVideo to four transformer forwards with
@@ -21,20 +21,31 @@ model:
   # Ultra, compute capability 10.3) with the same profile; its kernels are
   # compiled for both 10.0a and 10.3a — see TORCH_CUDA_ARCH_LIST below.
   #
-  # cpu and memory are an opening estimate. With nothing CPU-offloaded the host
-  # holds the load-time transient of eight ranks streaming a 148 GB bundle plus
-  # the built-clip buffer — about 1 GB of uint8 pixels per queued clip, bounded
-  # by inference.queue_size in fasth3.yaml — so re-measure on real hardware and
-  # tighten. If the offload flags in fasth3.yaml are turned back on, memory
-  # must rise to several hundred Gi (8 ranks × ~63 GB pinned) — see the note
-  # there.
+  # The CPU allocation is measured, not guessed. The engine runs nine
+  # processes (the runtime plus eight spawned workers), and NCCL host
+  # threads, kernel-launch threads, and the decode gather all burn CPU
+  # between collectives. At request 8 / limit 32 on a 192-vCPU HGX B200
+  # node the cgroup throttled 38% of CFS periods and the pod built at
+  # 0.85x realtime against 1.16x on identical unthrottled silicon (denoise
+  # 9.5 s vs 5 s, latent prep 1.65 s vs 0.3 s). Request and limit are both
+  # pinned at the account's model CPU quota (the registry 429s any limit
+  # above it) — the full quota guaranteed, none of it burstable — and
+  # OMP_NUM_THREADS in runtime_env stops the over-threading that amplified
+  # the throttle. Raise toward 64/128 if the quota moves again.
+  #
+  # memory: with nothing CPU-offloaded the host holds the load-time
+  # transient of eight ranks streaming a 148 GB bundle plus the built-clip
+  # buffer — about 1 GB of uint8 pixels per queued clip, bounded by
+  # inference.queue_size in fasth3.yaml. If the offload flags in
+  # fasth3.yaml are turned back on, memory must rise to several hundred Gi
+  # (8 ranks × ~63 GB pinned) — see the note there.
   resources:
     gpu:
       type: NVIDIA_B200
       count: 8
     cpu:
-      request: "8"
-      limit: "32"
+      request: "64"
+      limit: "64"
     # Sized for the resident text encoder: on eight dedicated Blackwell GPUs
     # each rank holds its own copy in VRAM (fasth3.yaml turns the offload
     # off), so the host carries only the load transient and the built-clip
@@ -90,13 +101,11 @@ build:
     # either. The kernel package's Python-side gate only accepts (10, 0),
     # though — sitecustomize.py widens it to this list; keep the two in
     # sync (_VSA_BUILT_CAPABILITIES) or a B300 silently serves the ~2.5x
-    # slower Triton route in eager mode.
+    # slower Triton route in eager mode. When this list changes, build once
+    # with UV_NO_CACHE=1: uv keys its built-wheel cache on the source
+    # revision alone and would silently reuse the wheel compiled for the
+    # old arch list.
     TORCH_CUDA_ARCH_LIST: "10.0a;10.3a"
-    # uv keys its built-wheel cache on the source revision alone, so an
-    # arch-list change would silently reuse a wheel compiled for the old
-    # arch. Disabling the cache keeps every kernel build honest; the docker
-    # layer cache still skips this step entirely when nothing changed.
-    UV_NO_CACHE: "1"
     CMAKE_BUILD_PARALLEL_LEVEL: "32"
     MAX_JOBS: "32"
   # Long-lived server allocating a clip's worth of pixels over and over, in two
@@ -121,3 +130,9 @@ build:
     TRANSFORMERS_OFFLINE: "1"
     PYTHONPATH: /app
     FASTH3_DYNAMO_RECOMPILE_LIMIT: "64"
+    # torch sizes its intra-op threadpools from nproc, which reports the
+    # whole node inside the container (192 on the hosted HGX nodes), so
+    # nine processes pile thousands of runnable threads against the CPU
+    # quota and CFS throttles them (measured: 38% of periods at limit 32).
+    # Eight threads per process keeps the total under resources.cpu.
+    OMP_NUM_THREADS: "8"

@@ -211,7 +211,17 @@ and removing any one of them regresses badly:
    RAM per rank and ~1 s page-in per clip (unpinned: ~15 s).
    `resources.memory` is sized for four host copies plus the built-clip
    buffer.
-6. **flash-attn-4 coexists with the runtime via a resolver override.** The
+6. **The CPU allocation is part of the profile.** Nine processes (runtime +
+   eight spawned workers) plus NCCL host threads and the decode gather
+   need real cores: at request 8 / limit 32 on a 192-vCPU hosted node the
+   cgroup throttled 38% of CFS periods and builds ran 0.85x against 1.16x
+   on identical unthrottled silicon (latent prep 1.65 s vs 0.3 s, denoise
+   9.5 s vs 5 s — the NVSwitch fabric was fine). `resources.cpu` pins
+   request and limit at the account's model CPU quota (64 today — the
+   registry 429s any higher limit), and `OMP_NUM_THREADS=8` caps
+   per-process threadpools, since `nproc` in the container reports the
+   whole node and torch otherwise sizes for it.
+7. **flash-attn-4 coexists with the runtime via a resolver override.** The
    runtime needs `protobuf>=7.35.1` (its generated bindings hard-reject an
    older runtime); FA4's pinned `nvidia-cutlass-dsl` caps protobuf `<7` — a
    stale cap, since protobuf accepts old gencode on a newer runtime.
