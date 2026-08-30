@@ -59,4 +59,10 @@ python main.py                      # everything from .env
 
 ## License
 
-Apache License 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+The code is Apache License 2.0 — see [LICENSE](./LICENSE) and
+[NOTICE](./NOTICE). The
+[model weights](https://huggingface.co/FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree)
+are licensed separately under the
+[MiniMax H3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE),
+inherited from the base model
+[MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3).
