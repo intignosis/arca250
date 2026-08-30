@@ -161,6 +161,15 @@ class ReactorLink:
             except Exception as error:
                 logger.error("[reactor] session error: %s", error)
                 await self._teardown()
+                # An "orphaned" refusal means a dead client's session is
+                # blocking the runtime, and its reaper takes a minute or
+                # more. Only local mode force-clears, and only on
+                # "orphaned" — "streaming" may be someone else's live
+                # session and is left alone.
+                if self._config.local and "orphaned" in str(error):
+                    await self._stop_local_session("orphaned session blocks connect")
+                    await asyncio.sleep(1.0)
+                    continue
             logger.info("[reactor] reconnecting in %.0fs", RECONNECT_DELAY_S)
             await asyncio.sleep(RECONNECT_DELAY_S)
 
@@ -235,11 +244,38 @@ class ReactorLink:
     async def _teardown(self) -> None:
         self._ready.clear()
         reactor, self._reactor = self._reactor, None
-        if reactor is not None:
-            try:
-                await reactor.disconnect()
-            except Exception:
-                pass
+        if reactor is None:
+            return
+        try:
+            await reactor.disconnect()
+        except Exception as error:
+            logger.warning("[reactor] disconnect failed: %s", error)
+            # The session we owned may now linger server-side and block the
+            # next connect until the runtime's reaper gets to it.
+            await self._stop_local_session("teardown after failed disconnect")
+
+    async def _stop_local_session(self, reason: str) -> None:
+        """Best-effort ``POST /stop_session`` on the local runtime.
+
+        Local mode only: the local runtime serves one session, so whatever
+        session exists is either ours or a dead predecessor's. Hosted
+        sessions belong to the coordinator and are never force-stopped.
+        """
+        if not self._config.local:
+            return
+        import aiohttp
+
+        url = f"{self._config.local_url.rstrip('/')}/stop_session"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, json={}, timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    logger.info(
+                        "[reactor] stop_session (%s): HTTP %d", reason, response.status
+                    )
+        except Exception as error:
+            logger.warning("[reactor] stop_session failed (%s): %s", reason, error)
 
     # ---------------------------------------------------------- media path
 

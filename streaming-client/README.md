@@ -293,6 +293,12 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
   bodyless reply and a `command_error` broadcast carrying the reason. Treat
   "reply without `clip`" as refusal and retry with patience (the director
   does).
+- **A dead client leaves the local runtime "orphaned"** and its reaper takes
+  a minute or more, during which every connect gets a 409. The link
+  force-clears it with a bare `POST /stop_session` — local mode only, and
+  only on the `orphaned` refusal, never on `streaming` (that may be someone
+  else's live session). Teardown does the same when its own disconnect
+  fails, so restarts don't inherit the wait.
 
 ## Maintenance notes (for agents)
 

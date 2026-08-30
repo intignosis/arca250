@@ -55,6 +55,11 @@ logger = logging.getLogger(__name__)
 # fasth3's enqueue cap (fasth3_types.MAX_PROMPT_CHARS). Hard limit, enforced
 # server-side; _sanitize truncates to it.
 MAX_PROMPT_CHARS = 800
+# How many LLM calls one idea gets before the raw-prompt fallback. Each
+# attempt is warned about individually with the reply's head, so a systematic
+# failure is diagnosable from the log.
+_MAX_ATTEMPTS = 3
+
 # What the LLM is asked to stay under, leaving headroom for its poor counting.
 # Sized so an overshoot still fits under the 800 hard cap: the sanitizer
 # truncates mid-word at 800, and what it cuts is the prompt's tail — the
@@ -226,42 +231,29 @@ class PromptUpsampler:
             scene_count_rules=scene_count_rules,
         )
         group_id = uuid.uuid4().hex[:12]
-        try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"Viewer idea: {raw_prompt}"},
-                ],
-                temperature=0.8,
-                max_tokens=1800,
-                response_format={"type": "json_object"},
-            )
-            content = response.choices[0].message.content or ""
-            data = json.loads(content or "{}")
-            title = str(data.get("title") or raw_prompt[:60]).strip()
-            raw_scenes = data.get("scenes")
-            if isinstance(raw_scenes, dict):
-                raw_scenes = [raw_scenes]
-            if not raw_scenes and "prompt" in data:
-                # Some models flatten a single scene's fields to the top
-                # level despite the schema; accept it as one scene.
-                raw_scenes = [data]
-            scenes = self._validate_scenes(
-                raw_scenes or [], chunk_cap, min_seconds, max_seconds
-            )
-            if not scenes:
-                raise ValueError(
-                    "no usable scenes in the reply "
-                    f"(finish={response.choices[0].finish_reason}, "
-                    f"head={content[:200]!r})"
+        title = ""
+        scenes: list[Scene] = []
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                title, scenes = await self._attempt(
+                    system=system,
+                    raw_prompt=raw_prompt,
+                    request_tag=f"{group_id}.{attempt}",
+                    chunk_cap=chunk_cap,
+                    min_seconds=min_seconds,
+                    max_seconds=max_seconds,
                 )
-            if len(scenes) == 1:
-                # A single-clip generation always runs the maximum length;
-                # short clips are reserved for transition chunks in stories.
-                scenes = [Scene(prompt=scenes[0].prompt, seconds=max_seconds)]
-        except Exception as error:
-            logger.warning("[upsampler] falling back to the raw prompt: %s", error)
+                break
+            except Exception as error:
+                logger.warning(
+                    "[upsampler] unusable reply, attempt %d/%d for %.60r: %s",
+                    attempt, _MAX_ATTEMPTS, raw_prompt, error,
+                )
+        if not scenes:
+            logger.warning(
+                "[upsampler] all %d attempts unusable; falling back to the raw prompt",
+                _MAX_ATTEMPTS,
+            )
             title = raw_prompt[:60]
             # The viewer's idea gets the char budget first; the style fills
             # whatever remains (a long STYLE must never truncate the idea away).
@@ -289,6 +281,59 @@ class PromptUpsampler:
                 group_id, index, len(group.scenes), scene.seconds, scene.prompt,
             )
         return group
+
+    async def _attempt(
+        self,
+        *,
+        system: str,
+        raw_prompt: str,
+        request_tag: str,
+        chunk_cap: int,
+        min_seconds: float,
+        max_seconds: float,
+    ) -> tuple[str, list[Scene]]:
+        """One LLM call, parsed and validated; raises on an unusable reply.
+
+        The request tag makes every attempt a distinct request — the gateway
+        caches identical ones, so a bare retry of a failed prompt would get
+        the same failed reply back in milliseconds.
+        """
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": f"Viewer idea: {raw_prompt}\n\n[request {request_tag}]",
+                },
+            ],
+            temperature=0.8,
+            max_tokens=1800,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or ""
+        data = json.loads(content or "{}")
+        title = str(data.get("title") or raw_prompt[:60]).strip()
+        raw_scenes = data.get("scenes")
+        if isinstance(raw_scenes, dict):
+            raw_scenes = [raw_scenes]
+        if not raw_scenes and "prompt" in data:
+            # Some models flatten a single scene's fields to the top level
+            # despite the schema; accept it as one scene.
+            raw_scenes = [data]
+        scenes = self._validate_scenes(
+            raw_scenes or [], chunk_cap, min_seconds, max_seconds
+        )
+        if not scenes:
+            raise ValueError(
+                "no usable scenes in the reply "
+                f"(finish={response.choices[0].finish_reason}, head={content[:200]!r})"
+            )
+        if len(scenes) == 1:
+            # A single-clip generation always runs the maximum length; short
+            # clips are reserved for transition chunks in stories.
+            scenes = [Scene(prompt=scenes[0].prompt, seconds=max_seconds)]
+        return title, scenes
 
     def _validate_scenes(
         self, raw_scenes: list, chunk_cap: int, min_seconds: float, max_seconds: float
