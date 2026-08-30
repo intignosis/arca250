@@ -111,7 +111,11 @@ editing (rationale in the module docstring):
   (`MAX_PROMPT_CHARS`, the model's server-side cap) because LLMs can't count;
 - scene `seconds` are chosen by the LLM and **clamped to the live bounds**
   from `state_update` (`clip_seconds_min/max`), never hardcoded;
-- fasth3 renders audio, so each scene prompt ends with a soundscape clause.
+- fasth3 renders audio including clear spoken language, so the prompt asks
+  for explicit quoted dialogue (who speaks, the exact words, the tone)
+  whenever the idea implies speech, plus a soundscape clause per scene;
+- safety is the moderator's job, upstream — the upsampler stages the idea
+  faithfully and never softens or reinterprets it.
 
 Any LLM failure degrades to a single scene made of style + the raw prompt —
 the stream never stalls on the upsampler.
@@ -128,9 +132,10 @@ typically points at api.openai.com while upsampling goes through a gateway.
 The policy is **fail closed**: a prompt that cannot be checked is rejected,
 so a broken moderation endpoint never silently turns moderation off. To run
 without moderation, set `MODERATION_ENABLED=0` explicitly — main.py then
-warns at startup. Only the raw viewer prompt is checked: the upsampled scenes
-are the LLM's own writing under a system prompt that reinterprets hostile
-ideas, and the idle list is curated in this repo.
+warns at startup. Only the raw viewer prompt is checked, and it is the
+**only** safety gate: the upsampler deliberately stages ideas faithfully
+rather than softening them, so what passes moderation is what gets rendered.
+The idle list is curated in this repo and skips the check.
 
 ## Idle filler
 

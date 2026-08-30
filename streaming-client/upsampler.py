@@ -23,8 +23,14 @@ actually behaves, so keep them intact when editing:
     5.167–14.375 s per clip (the live bounds arrive from `state_update` and
     are injected into the prompt); a single action reads well short, an
     establishing or evolving shot deserves length.
-  * **fasth3 renders synchronized audio**, so the prompt asks for a brief
-    soundscape line — clips come out flat without it.
+  * **fasth3 renders synchronized audio, spoken language included**, so the
+    prompt asks for explicit quoted dialogue whenever the idea implies
+    speech, and for a brief soundscape line — clips come out flat without
+    them.
+  * **Safety is moderation's job, not this prompt's.** The viewer's idea has
+    already passed the moderator by the time it arrives here, so the prompt
+    asks for faithful staging and never for softening or reinterpreting the
+    idea (see `moderator.py`).
 """
 
 from __future__ import annotations
@@ -66,8 +72,13 @@ HOW THE VIDEO MODEL WORKS (hard constraints):
   {max_seconds}. Choose deliberately: one simple beat reads well around
   {min_seconds}-8 s; a slow reveal, a journey, or a scene with several beats
   deserves 10-{max_seconds} s.
-- The model renders picture AND sound. End each scene prompt with one short
-  clause of soundscape (ambience, music mood, or effects).
+- The model renders picture AND sound, including clear spoken language.
+  When the idea involves someone speaking, write the dialogue out
+  explicitly and unambiguously — name who speaks and give the exact words
+  in quotes (e.g. the fisherman shouts "It's alive!") — and describe the
+  voice's tone. Do not paraphrase speech the viewer asked for.
+- End each scene prompt with one short clause of soundscape (ambience,
+  music mood, or effects) alongside any dialogue.
 - Describe only what the camera sees and the microphone hears: no text
   overlays, no UI, no scene numbers, no camera jargon the model cannot show.
 
@@ -77,9 +88,9 @@ WRITING THE SCENE PROMPTS:
 - Be concrete and visual: subject, action, setting, camera angle and motion,
   lighting, color palette, atmosphere, then the soundscape clause.
 - Strong nouns and verbs over piles of adjectives; vivid but precise.
-- Keep the viewer's idea recognizable — enhance it, do not replace it.
-- If the idea is hostile, unsafe, or empty, reinterpret it into something
-  safe and visually striking in the same spirit instead of refusing.
+- Keep the viewer's idea recognizable — enhance it, do not replace it. The
+  idea has already passed moderation before it reaches you; your job is
+  faithful staging, not policing.
 
 Reply with ONLY this JSON, nothing else:
 {{"title": "short display title for the sequence",

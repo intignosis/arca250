@@ -8,9 +8,10 @@ not expose `/moderations` (Reactor's corp gateway answers it with
 upsampling goes through the gateway.
 
 Policy decisions, deliberate:
-  * Only the viewer's raw prompt is checked. The upsampled scenes are the
-    LLM's own writing under a system prompt that already reinterprets hostile
-    ideas, and idle-filler prompts are a curated list in this repo.
+  * Only the viewer's raw prompt is checked, and this is the **only** safety
+    gate: the upsampler deliberately stages ideas faithfully rather than
+    softening them, so what passes here is what gets rendered. Idle-filler
+    prompts are a curated list in this repo and skip the check.
   * Errors **fail closed**: a prompt that cannot be checked is rejected. A
     silent fail-open would quietly turn moderation off exactly when the
     endpoint misbehaves. If the stream must keep accepting prompts without a
