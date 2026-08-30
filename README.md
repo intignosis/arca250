@@ -10,7 +10,7 @@ Two halves, one contract:
 
 | Folder | What it is | Runs on |
 | --- | --- | --- |
-| [`fast-h3/`](./fast-h3) | The model: a queue of prompt-driven clip generations with explicit/auto playback. A `reactor` CLI workspace. | [Reactor Runtime](https://github.com/reactor-team/reactor-runtime), 8x B300 |
+| [`fast-h3/`](./fast-h3) | The model: a queue of prompt-driven clip generations with explicit/auto playback. A `reactor` CLI workspace. | [Reactor Runtime](https://github.com/reactor-team/reactor-runtime), 8x B200 |
 | [`streaming-client/`](./streaming-client) | The client: chat → prompt upsampling → scene groups → the model's queue → paced RTMP output. | `reactor-sdk` (Python), any box with ffmpeg |
 
 They meet on the wire: `fast-h3/fasth3_types.py` is the client-facing

@@ -112,12 +112,11 @@ runtime:
   # Offload policy. The text encoder is ~63 GB and every rank loads its own
   # copy; offloading it to the host would cost ~63 GB of host memory per rank
   # (~500 GB on eight — size resources.memory in reactor.yaml with it) plus a
-  # transfer per clip. On a dedicated 8-GPU Blackwell pod (B300 hosted) the
-  # resident footprint (~92 GB per rank) fits comfortably in VRAM (288 GB
-  # per B300), so the offload is off: no per-clip page-in, and the host
-  # stays small. Turn it back on
-  # only for shared machines, together with pin_cpu_memory and a much larger
-  # resources.memory.
+  # transfer per clip. On a dedicated 8-GPU Blackwell pod the resident
+  # footprint (~92 GB per rank) fits comfortably in VRAM (183 GB per B200,
+  # 288 GB per B300), so the offload is off: no per-clip page-in, and the
+  # host stays small. Turn it back on only for shared machines, together
+  # with pin_cpu_memory and a much larger resources.memory.
   offload_text_encoder: false
   offload_vae: false
 

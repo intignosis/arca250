@@ -17,9 +17,9 @@ model:
   # 24/7 feed needs builds to outpace playback or every clip boundary waits
   # on the GPUs, so the extra four buy the realtime headroom, not just
   # shorter enqueue-to-ready waits. The count must divide H3's 56 attention
-  # heads (1, 2, 4, 7, 8 …). B300 (Blackwell Ultra, compute capability 10.3)
-  # serves the same profile; the image compiles its kernels for both 10.0a
-  # and 10.3a — see TORCH_CUDA_ARCH_LIST below.
+  # heads (1, 2, 4, 7, 8 …). The image serves B200 and B300 (Blackwell
+  # Ultra, compute capability 10.3) with the same profile; its kernels are
+  # compiled for both 10.0a and 10.3a — see TORCH_CUDA_ARCH_LIST below.
   #
   # cpu and memory are an opening estimate. With nothing CPU-offloaded the host
   # holds the load-time transient of eight ranks streaming a 148 GB bundle plus
@@ -30,14 +30,15 @@ model:
   # there.
   resources:
     gpu:
-      type: NVIDIA_B300
+      type: NVIDIA_B200
       count: 8
     cpu:
       request: "8"
       limit: "32"
-    # Sized for the resident text encoder: on eight dedicated B300s each rank
-    # holds its own copy in VRAM (fasth3.yaml turns the offload off), so the
-    # host carries only the load transient and the built-clip buffer.
+    # Sized for the resident text encoder: on eight dedicated Blackwell GPUs
+    # each rank holds its own copy in VRAM (fasth3.yaml turns the offload
+    # off), so the host carries only the load transient and the built-clip
+    # buffer.
     memory:
       request: 64Gi
       limit: 256Gi
