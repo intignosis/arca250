@@ -96,9 +96,35 @@ bit rests:
    stalls the pipeline. Every capacity is read live from `state_update`,
    never assumed.
 6. **The idle filler stands down** whenever viewer work is pending, gates on
-   `IDLE_QUEUE_TARGET` across both queues, and always produces single-scene
+   `IDLE_QUEUE_TARGET` across both queues (self-clamped under the live
+   playout capacity — see below), and always produces single-scene
    max-length groups — the finest pop granularity, and popping one never
    truncates a story.
+
+### What the two capacities mean to this client
+
+The deployment publishes both queue bounds live in `state_update`, and the
+client adapts to whatever they are — **no constant in this codebase may
+encode a capacity**, because a deployment can resize either knob without the
+client changing:
+
+- **`playout_capacity`** (the model's `queue_size`) is the scarce resource —
+  built clips in host RAM — so the client treats it as *the clip budget*:
+  the viewer backlog across both queues drops new prompts at this number
+  (policy 5), the backpressure rule watches the playout queue against it
+  (policy 4), and the idle target self-clamps to at least one slot below it,
+  since filler must never be what fills the playout queue to the brim
+  (a full playout queue pauses builds; the headroom is where the next viewer
+  clip lands).
+- **`generation_capacity`** is cheap backlog (prompts, not pixels): the
+  client only checks that a whole group fits before enqueueing, evicting
+  waiting filler if needed.
+- **A mismatch between the two is normal, not an error.** A big generation
+  queue over a small playout queue just means a long build backlog draining
+  through few slots — every policy above keeps working, only waits grow. A
+  tiny deployment (say `queue_size: 3`) shrinks the clip budget, the idle
+  target, and the drop threshold in one motion, with no configuration
+  change here.
 
 ## 4. The media path
 

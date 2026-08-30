@@ -190,11 +190,18 @@ class Director:
         )
         while True:
             await asyncio.sleep(_IDLE_POLL_S)
+            # The configured target self-clamps under the deployment's live
+            # playout capacity: filler must never be what fills the playout
+            # queue to the brim, because a full playout queue pauses builds
+            # (leave at least one slot's headroom for a viewer clip to land).
+            target = min(
+                self._idle_target, max(1, self._link.playout_capacity - 1)
+            )
             if (
                 not self._pending.empty()
                 or not self._link.connected
                 or self._link.generation_queued + self._link.playout_queued
-                >= self._idle_target
+                >= target
             ):
                 continue
             text = self._idle_prompts[self._idle_index % len(self._idle_prompts)]

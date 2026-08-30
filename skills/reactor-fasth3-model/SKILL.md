@@ -125,6 +125,22 @@ popped).
   `get_queue`, `get_state` complete the surface;
   `state_update.valid_commands` tells a client exactly what is legal right
   now (`fasth3_session_rules.py`).
+- **The two bounds are independent, and each gates only its own entrance.**
+  `generation_queue_size` (default 20) refuses `enqueue` with
+  `command_error` when the generation queue is full — nothing else is
+  affected, builds and playback continue. `queue_size` (default 10) never
+  refuses anything a client sends: it pauses *build submission* while the
+  playout queue is full, and building resumes the moment `play` or `pop`
+  frees a slot. Any ratio of the two is valid; there is no ordering
+  constraint between them, and no combination deadlocks (a full playout
+  queue is always drainable by `play`, `pop`, or `reset`). Their meanings
+  differ: the playout bound is the host-memory budget (~1 GB per built
+  clip — sized together with `resources.memory`), the generation bound just
+  protects the build backlog, prompts being nearly free. A session holds at
+  most `generation + playout + 1` clips (the playing clip is in neither
+  queue). Both capacities are published live in `state_update`
+  (`generation_capacity`, `playout_capacity`); a client must read them from
+  there, never assume the defaults.
 - Every clip-referencing message embeds the whole `ClipInfo`. On the wire it
   travels as a plain mapping (the transport encoder accepts only
   JSON-representable values); the `ClipInfo` dataclass in `fasth3_types.py`

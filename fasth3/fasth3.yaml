@@ -27,7 +27,11 @@ inference:
 
   # Most clips the generation queue holds; `enqueue` is refused beyond it.
   # Entries here are prompts, not pixels, so the bound is about protecting the
-  # build backlog, not memory.
+  # build backlog, not memory. Independent of queue_size — any ratio of the
+  # two is valid: each bound gates only its own entrance (`enqueue` here, the
+  # build submission for the playout queue), and they meet only through the
+  # build pause while the playout queue is full. Both are published live in
+  # `state_update` as generation_capacity / playout_capacity.
   generation_queue_size: 20
 
   # Seed the first `enqueue` of a session uses; each one advances it by one.

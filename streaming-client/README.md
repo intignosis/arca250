@@ -156,12 +156,16 @@ The idle list is curated in this repo and skips the check.
 
 ## Idle filler
 
-When chat is quiet, the director's `run_idle` task keeps the model's queue
-topped up to `IDLE_QUEUE_TARGET` clips (default 6) from `idle_prompts.txt`
-(shuffled, then rotated; override with `IDLE_PROMPTS_FILE`). Filler prompts
-run through the same upsampler and style but are forced to **one scene per
-group** — the finest eviction granularity, and popping one never truncates a
-story — and their metadata carries `generated: true`.
+When chat is quiet, the director's `run_idle` task keeps the model's queues
+(generation + playout together) topped up to `IDLE_QUEUE_TARGET` clips
+(default 6) from `idle_prompts.txt` (shuffled, then rotated; override with
+`IDLE_PROMPTS_FILE`). The target **self-clamps to one below the deployment's
+live playout capacity**: filler must never fill the playout queue to the
+brim, because a full playout queue pauses builds, and the headroom slot is
+where the next viewer clip lands. Filler prompts run through the same
+upsampler and style but are forced to **one scene per group** — the finest
+eviction granularity, and popping one never truncates a story — and their
+metadata carries `generated: true`.
 
 Viewers always outrank filler — while staying first-come-first-served among
 themselves — in four ways:
@@ -188,8 +192,9 @@ live from `state_update`, never assumed. Everything above reads the metadata
 echo, so it survives client restarts and works on clips this process has no
 memory of enqueueing.
 
-The target (6) sits deliberately under the queue capacity (10): the gap is
-headroom a viewer group can take without any eviction at all.
+The default target (6) sits under the default playout capacity (10) for the
+same reason the clamp exists: the gap is headroom a viewer group can take
+without any eviction at all.
 
 ## Overlay
 
