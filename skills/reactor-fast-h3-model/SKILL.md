@@ -44,9 +44,9 @@ sparsity. Facts that shape everything downstream:
   ≤ 768×1344, sides multiples of 32. Four aspect choices are offered
   (`16:9` → 1344×768, `1:1`, `9:16`, `4:3`).
 - **GPU count must divide H3's 56 attention heads** (1, 2, 4, 7, 8, …).
-  Six GPUs is not a configuration; the engine refuses at init. Four B200s is
-  FastVideo's tested default and what this deployment runs; the count only
-  moves the enqueue-to-ready wait, since playback is explicit.
+  Six GPUs is not a configuration; the engine refuses at init. Four B200s
+  is FastVideo's tested default; the hosted deployment runs eight B300s so
+  builds outpace realtime playback and autoplay never waits on the GPUs.
 
 ## 2. How the Reactor Runtime serves it
 
