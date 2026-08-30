@@ -279,8 +279,11 @@ a non-admin is consumed and logged, never treated as a prompt.
   against the `presets/` folder at switch time (only bare names, never
   paths), so dropping a new JSON into the folder makes it switchable with no
   restart. The upsampler's style and the idle filler's prompt list change
-  immediately; clips already queued keep the style they were written in and
-  drain naturally.
+  immediately, and both model queues are flushed down to one buffer clip —
+  the playout front, or the clip already building when nothing is built —
+  so the new identity reaches the stream in about one clip's time instead
+  of draining a whole queue of old-style clips. Chat prompts still waiting
+  to be upsampled survive the flush; they come out in the new style.
 
 New admin commands go in `admin.py`: add the word to `AdminControl.commands`
 and a branch in `handle` — the chat sources and router pick it up from

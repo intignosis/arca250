@@ -100,13 +100,49 @@ class Director:
     def set_idle_prompts(self, prompts: Sequence[str]) -> None:
         """Replace the idle filler's prompt list (a preset switch), reshuffled.
 
-        Takes effect on the filler's next top-up; filler already queued from
-        the old list drains naturally (or is evicted for viewer groups as
-        usual). An empty list idles the filler until a later switch.
+        Takes effect on the filler's next top-up. The preset switch that
+        calls this also flushes clips queued under the old preset
+        (`flush_stale_clips`). An empty list idles the filler until a later
+        switch.
         """
         self._idle_prompts = list(prompts)
         random.shuffle(self._idle_prompts)
         self._idle_index = 0
+
+    async def flush_stale_clips(self) -> None:
+        """Drop queued clips after a preset switch so the new identity shows fast.
+
+        Every clip in both queues was written for the old preset, viewer and
+        filler alike, and a full queue of them keeps the old style on stream
+        for minutes. One clip survives as the on-air buffer — the playout
+        front when something is built, otherwise the generation front (its
+        build may already be running) — to bridge the gap while the first
+        new-style clips build. Pending chat prompts are untouched: they have
+        not been upsampled yet, so they come out in the new style.
+        """
+        async with self._enqueue_lock:
+            keep: str | None = None
+            if self._link.playout_clips:
+                keep = self._link.playout_clips[0]["clip_id"]
+            elif self._link.generation_clips:
+                keep = self._link.generation_clips[0]["clip_id"]
+            doomed = [
+                clip
+                for clip in self._link.generation_clips + self._link.playout_clips
+                if clip["clip_id"] != keep
+            ]
+            popped = 0
+            for clip in doomed:
+                reply = await self._link.send_command(
+                    "pop", {"clip_id": clip["clip_id"]}
+                )
+                if isinstance(reply, dict) and "clip" in reply:
+                    popped += 1
+            logger.info(
+                "[director] preset switch: flushed %d/%d queued clips%s",
+                popped, len(doomed),
+                " (front kept as buffer)" if keep else "",
+            )
 
     # -------------------------------------------------------- chat intake
 

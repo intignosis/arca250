@@ -18,12 +18,16 @@ The command set:
   * `!switch <preset>` — swap the creative preset live. The name is resolved
     against the `presets/` folder at that moment, so dropping a new JSON
     into the folder makes it switchable with no restart. The upsampler's
-    style and the idle filler's prompt list change immediately; clips
-    already queued keep the style they were written in and drain naturally.
+    style and the idle filler's prompt list change immediately, and both
+    model queues are flushed down to one buffer clip
+    (`Director.flush_stale_clips`) so the new identity reaches the stream in
+    about one clip's time instead of draining a whole queue of old-style
+    clips.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from chat import ChatPrompt
@@ -52,6 +56,7 @@ class AdminControl:
         self._admins = admin_users
         self._upsampler = upsampler
         self._director = director
+        self._flush_task: asyncio.Task | None = None
 
     def is_admin(self, prompt: ChatPrompt) -> bool:
         """Whether the message's author is on the admin list."""
@@ -100,7 +105,14 @@ class AdminControl:
             return
         self._upsampler.set_style(preset["style"])
         self._director.set_idle_prompts(preset["idle_prompts"])
+        # Handled here synchronously (chat callbacks run on the event loop);
+        # the flush itself pops clips over the wire, so it runs as a task.
+        # The reference keeps it from being garbage-collected mid-flight.
+        self._flush_task = asyncio.create_task(
+            self._director.flush_stale_clips(), name="preset-switch-flush"
+        )
         logger.info(
-            "[admin] %s@%s switched preset to %r (%d idle prompts)",
+            "[admin] %s@%s switched preset to %r (%d idle prompts); "
+            "flushing stale queued clips",
             prompt.author, prompt.source, name, len(preset["idle_prompts"]),
         )

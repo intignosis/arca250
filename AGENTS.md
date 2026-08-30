@@ -62,7 +62,9 @@ clip budget drops new prompts, and every capacity is read live from
 moderations API first (own endpoint, fail-closed; see `moderator.py`).
 Chatters on the `ADMIN_USERS` list can also send admin commands, routed to
 `streaming-client/admin.py` ahead of the director: `!switch <preset>` swaps
-the creative preset live, resolved against `presets/` at switch time. While
+the creative preset live, resolved against `presets/` at switch time, and
+flushes both model queues down to one buffer clip so the new identity shows
+on stream fast. While
 chat is quiet, an idle filler tops the queue up to `IDLE_QUEUE_TARGET` with
 single-scene groups tagged `generated: true`; viewer groups evict those
 (`pop`) when they need the room. The **pacer** converts clip-shaped output
@@ -80,8 +82,9 @@ scene title/author, coming up — all reconstructed from the metadata echo).
    policy — autoplay chains the playout front for gapless transitions, the
    director's `run_playout` curates that front with `move`, and the
    overlay's "coming up" reads the same function. Group sequencing rests on the
-   Director being the queues' only writer (viewer worker and idle filler
-   serialize through one lock), viewer FIFO on positional inserts ahead of
+Director being the queues' only writer (viewer worker, idle filler, and
+ the preset-switch flush serialize through one lock), viewer FIFO on
+ positional inserts ahead of
    filler (`viewer_insert_position` → `enqueue`'s `position`), and a group
    being enqueued only when all its scenes fit the generation queue —
    waiting-filler eviction (`pop` on `generated: true` clips only) makes
