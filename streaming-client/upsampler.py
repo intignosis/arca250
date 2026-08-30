@@ -216,9 +216,14 @@ class PromptUpsampler:
         except Exception as error:
             logger.warning("[upsampler] falling back to the raw prompt: %s", error)
             title = raw_prompt[:60]
+            # The viewer's idea gets the char budget first; the style fills
+            # whatever remains (a long STYLE must never truncate the idea away).
+            idea = _sanitize(raw_prompt)
+            style_room = MAX_PROMPT_CHARS - len(idea) - 2
+            fallback = f"{idea}. {self._style[:style_room]}" if style_room > 20 else idea
             scenes = [
                 Scene(
-                    prompt=_sanitize(f"{self._style}. {raw_prompt}"),
+                    prompt=_sanitize(fallback),
                     seconds=_clamp(8.0, min_seconds, max_seconds),
                 )
             ]
