@@ -179,7 +179,8 @@ the same change as the code it describes:
 | --- | --- | --- |
 | `AGENTS.md` (this file; `CLAUDE.md` symlinks here) | System picture, load-bearing invariants, change routing, verification | any invariant, component, or workflow moves |
 | `streaming-client/README.md` | Client architecture, the ffmpeg/RTMP learnings, moderation & idle-filler behaviour, run instructions | client behaviour it describes moves |
-| `streaming-client/{sinks,chat}/base.py` docstrings | The sink and chat-source interface contracts | the contract itself changes (READMEs only summarize these) |
+| `streaming-client/{sinks,chat,overlay}/base.py` docstrings | The sink, chat-source, and overlay interface contracts | the contract itself changes (READMEs only summarize these) |
+| `skills/*/SKILL.md` | Deep context handoffs: `reactor-fasth3-model` (the model, its profile, serving), `reactor-streaming-client` (the client's pipeline and policies) | anything they narrate moves — same change, per their own closing sections |
 | `streaming-client/.env.example` + `fasth3/README.md` | Every knob, with its default; the model's own story | a knob or model surface is added/renamed |
 
 A PR that changes behaviour without touching the document that describes it
