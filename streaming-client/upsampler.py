@@ -119,6 +119,8 @@ WRITING THE SCENE PROMPTS:
 Reply with ONLY this JSON, nothing else:
 {{"title": "short display title for the sequence",
   "scenes": [{{"prompt": "self-contained scene description...", "seconds": 8.0}}]}}
+The "scenes" array is REQUIRED even when it holds a single scene; never
+flatten a scene's fields to the top level.
 """
 
 _MULTI_SCENE_RULES = """\
@@ -235,13 +237,25 @@ class PromptUpsampler:
                 max_tokens=1800,
                 response_format={"type": "json_object"},
             )
-            data = json.loads(response.choices[0].message.content or "{}")
+            content = response.choices[0].message.content or ""
+            data = json.loads(content or "{}")
             title = str(data.get("title") or raw_prompt[:60]).strip()
+            raw_scenes = data.get("scenes")
+            if isinstance(raw_scenes, dict):
+                raw_scenes = [raw_scenes]
+            if not raw_scenes and "prompt" in data:
+                # Some models flatten a single scene's fields to the top
+                # level despite the schema; accept it as one scene.
+                raw_scenes = [data]
             scenes = self._validate_scenes(
-                data.get("scenes", []), chunk_cap, min_seconds, max_seconds
+                raw_scenes or [], chunk_cap, min_seconds, max_seconds
             )
             if not scenes:
-                raise ValueError("no usable scenes in the reply")
+                raise ValueError(
+                    "no usable scenes in the reply "
+                    f"(finish={response.choices[0].finish_reason}, "
+                    f"head={content[:200]!r})"
+                )
             if len(scenes) == 1:
                 # A single-clip generation always runs the maximum length;
                 # short clips are reserved for transition chunks in stories.
