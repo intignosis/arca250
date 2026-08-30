@@ -59,7 +59,10 @@ ahead of waiting filler and behind waiting viewers (`enqueue`'s `position`)
 so the GPUs build them next, FIFO among viewers. A viewer backlog at the
 clip budget drops new prompts, and every capacity is read live from
 `state_update`. Viewer prompts pass the OpenAI
-moderations API first (own endpoint, fail-closed; see `moderator.py`). While
+moderations API first (own endpoint, fail-closed; see `moderator.py`).
+Chatters on the `ADMIN_USERS` list can also send admin commands, routed to
+`streaming-client/admin.py` ahead of the director: `!switch <preset>` swaps
+the creative preset live, resolved against `presets/` at switch time. While
 chat is quiet, an idle filler tops the queue up to `IDLE_QUEUE_TARGET` with
 single-scene groups tagged `generated: true`; viewer groups evict those
 (`pop`) when they need the room. The **pacer** converts clip-shaped output
@@ -111,10 +114,11 @@ scene title/author, coming up — all reconstructed from the metadata echo).
 | The wire contract (commands, messages, fields) | `fast-h3/fasth3_types.py` + the handler | `streaming-client/reactor_link.py` + `director.py` mirror it; both READMEs; version bump sized to schema impact |
 | Stream delivery (encoding, destinations) | `streaming-client/sinks/` | register in `make_sink`, `.env.example`, README sink table |
 | Prompt sources | `streaming-client/chat/` | `build_chat_sources` in `main.py`, `.env.example`, README |
+| Admin chat commands (`!switch`, the `ADMIN_USERS` list) | `streaming-client/admin.py` (routed ahead of the director in `main.py`) | `.env.example`, README's Admin commands section |
 | Upsampling behaviour / the style prompt | `streaming-client/upsampler.py` | keep the constraint rules intact — the rationale is in the module docstring |
 | Moderation policy | `streaming-client/moderator.py` | keep it fail-closed; README's Moderation section |
 | Idle filler / eviction | `streaming-client/director.py` (`run_idle`, `_evict_fillers`) | README's Idle filler section |
-| A stream's creative identity (style + premade prompts) | `streaming-client/presets/<name>.json` (format in `config.py`'s `_load_preset`; only `default.json` is tracked) | README's Idle filler + Prompt upsampling sections |
+| A stream's creative identity (style + premade prompts) | `streaming-client/presets/<name>.json` (format in `config.py`'s `load_preset`; only `default.json` is tracked; admins swap presets live with `!switch`) | README's Idle filler + Prompt upsampling sections |
 | What the broadcast shows on top of the video | `streaming-client/overlay/` (contract in `base.py`; shipped overlay in `status.py`) | README's Overlay section; keep compose non-mutating and per-frame cheap |
 
 ## Model rules (`fast-h3/`) — distilled from the Reactor cookbook

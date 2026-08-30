@@ -41,6 +41,7 @@ presets/<n>.json ──┘ (filler)     │
 | `config.py` | The only reader of `.env` / environment / CLI. |
 | `reactor_link.py` | Everything that touches `reactor_sdk`: connect/reconnect loop, media → pacer, `state_update`/`queue_update` mirror, command sending, message fan-out. |
 | `director.py` | Chat prompt → moderate → upsample → enqueue scene groups; idle filler + eviction; per-author cooldown; now-playing narration from metadata. |
+| `admin.py` | Admin chat commands from the `ADMIN_USERS` list: `!switch <preset>` swaps the creative preset live. Routed ahead of the director in `main.py`. |
 | `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length clamp, chunk-count cap). |
 | `moderator.py` | The moderations call and the fail-closed policy. |
 | `presets/` | Creative presets: one JSON per stream identity — the style block plus the premade idle prompts. `default.json` ships; other presets stay untracked. |
@@ -117,7 +118,7 @@ echo, not client-side state that a reconnect can lose.
 `upsampler.py` calls one OpenAI-compatible endpoint (`OPENAI_BASE_URL` +
 `OPENAI_API_KEY`, so a proxy / vLLM / OpenRouter all work) with a system
 prompt that embeds the **preset's style/character** (`PRESET` names a
-JSON bundle in `presets/`; format in `config.py`'s `_load_preset`). The
+JSON bundle in `presets/`; format in `config.py`'s `load_preset`). The
 prompt's rules mirror how fast-h3 actually behaves — keep them intact when
 editing (rationale in the module docstring):
 
@@ -251,7 +252,9 @@ extend this table.
 `chat/base.py` is the contract: a long-lived `run(on_prompt)` coroutine that
 reconnects internally, delivers each message at most once, never replays
 backlog from before startup, and strips the command word. Prompts are
-messages starting with `CHAT_COMMAND` (default `!prompt`).
+messages starting with `CHAT_COMMAND` (default `!prompt`); sources also
+match the admin commands below, and each delivered message records which
+command it hit.
 
 - **Twitch** (`TWITCH_CHANNEL`): anonymous read-only IRC (`justinfan` login) —
   no OAuth, no app registration, no token rotation.
@@ -262,6 +265,26 @@ messages starting with `CHAT_COMMAND` (default `!prompt`).
 
 Both can run at once. Per-author cooldown (`CHAT_COOLDOWN_S`) and a bounded
 backlog in the director keep spam from monopolizing the queue.
+
+### Admin commands
+
+Usernames listed in `ADMIN_USERS` (comma-separated, case-insensitive; scope
+an entry as `twitch:name` / `youtube:name` when the same display name could
+be different people on different platforms) may send admin commands.
+`main.py` routes them to `admin.py` *before* the director, so they never
+cost a cooldown slot, a moderation call, or an LLM call; the same word from
+a non-admin is consumed and logged, never treated as a prompt.
+
+- `!switch <preset>` — swap the creative preset live. The name is resolved
+  against the `presets/` folder at switch time (only bare names, never
+  paths), so dropping a new JSON into the folder makes it switchable with no
+  restart. The upsampler's style and the idle filler's prompt list change
+  immediately; clips already queued keep the style they were written in and
+  drain naturally.
+
+New admin commands go in `admin.py`: add the word to `AdminControl.commands`
+and a branch in `handle` — the chat sources and router pick it up from
+there.
 
 ## Running
 

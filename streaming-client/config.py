@@ -21,7 +21,25 @@ def _flag(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _load_preset(name_or_path: str) -> dict:
+class PresetError(ValueError):
+    """A preset file is missing or malformed."""
+
+
+def presets_dir() -> Path:
+    """The `presets/` folder next to this module."""
+    return Path(__file__).parent / "presets"
+
+
+def available_presets() -> list[str]:
+    """Preset names loadable right now, read fresh from the folder.
+
+    Scanned on every call, so a JSON dropped into `presets/` mid-run is
+    immediately switchable (see `admin.py`'s `!switch`).
+    """
+    return sorted(path.stem for path in presets_dir().glob("*.json"))
+
+
+def load_preset(name_or_path: str) -> dict:
     """Load and validate one preset: the creative bundle the stream runs.
 
     `PRESET` names a file in the `presets/` folder next to this module
@@ -39,23 +57,28 @@ def _load_preset(name_or_path: str) -> dict:
         }
 
     Unknown keys are ignored, so presets can carry their own notes.
+
+    Raises:
+        PresetError: when the file is missing, not JSON, or missing a
+            required key. Startup turns this into a clean exit; the admin
+            `!switch` path logs it and keeps the current preset.
     """
     if "/" in name_or_path or name_or_path.endswith(".json"):
         path = Path(name_or_path)
     else:
-        path = Path(__file__).parent / "presets" / f"{name_or_path}.json"
+        path = presets_dir() / f"{name_or_path}.json"
     if not path.is_file():
-        raise SystemExit(f"preset not found: {path} (set PRESET or --preset)")
+        raise PresetError(f"preset not found: {path}")
     try:
         preset = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
-        raise SystemExit(f"preset {path} is not valid JSON: {error}") from None
+        raise PresetError(f"preset {path} is not valid JSON: {error}") from None
     style = preset.get("style")
     prompts = preset.get("idle_prompts")
     if not isinstance(style, str) or not style.strip():
-        raise SystemExit(f"preset {path} needs a non-empty string `style`")
+        raise PresetError(f"preset {path} needs a non-empty string `style`")
     if not isinstance(prompts, list) or not all(isinstance(p, str) for p in prompts):
-        raise SystemExit(f"preset {path} needs `idle_prompts` as a list of strings")
+        raise PresetError(f"preset {path} needs `idle_prompts` as a list of strings")
     return {
         "style": style.strip(),
         "idle_prompts": [p.strip() for p in prompts if p.strip()],
@@ -109,6 +132,10 @@ class Config:
     youtube_video_id: str | None
     youtube_api_key: str | None
 
+    # Admins: chat usernames allowed to send admin commands (see admin.py).
+    # Normalized lowercase; entries are bare names or `source:name`.
+    admin_users: frozenset[str]
+
     @staticmethod
     def load(argv: list[str] | None = None) -> "Config":
         """Read `.env` + environment, apply CLI overrides, and validate."""
@@ -139,7 +166,10 @@ class Config:
         openai_base_url = os.environ.get("OPENAI_BASE_URL") or None
 
         preset_name = args.preset or os.environ.get("PRESET", "default")
-        preset = _load_preset(preset_name)
+        try:
+            preset = load_preset(preset_name)
+        except PresetError as error:
+            raise SystemExit(f"{error} (set PRESET or --preset)") from None
 
         config = Config(
             model=args.model or os.environ.get("REACTOR_MODEL", "fast-h3"),
@@ -169,6 +199,11 @@ class Config:
             twitch_channel=os.environ.get("TWITCH_CHANNEL") or None,
             youtube_video_id=os.environ.get("YOUTUBE_VIDEO_ID") or None,
             youtube_api_key=os.environ.get("YOUTUBE_API_KEY") or None,
+            admin_users=frozenset(
+                entry.strip().lower()
+                for entry in os.environ.get("ADMIN_USERS", "").split(",")
+                if entry.strip()
+            ),
         )
         config.validate()
         return config

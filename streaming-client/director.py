@@ -97,6 +97,17 @@ class Director:
         self._enqueue_lock = asyncio.Lock()
         link.add_listener(self._on_model_message)
 
+    def set_idle_prompts(self, prompts: Sequence[str]) -> None:
+        """Replace the idle filler's prompt list (a preset switch), reshuffled.
+
+        Takes effect on the filler's next top-up; filler already queued from
+        the old list drains naturally (or is evicted for viewer groups as
+        usual). An empty list idles the filler until a later switch.
+        """
+        self._idle_prompts = list(prompts)
+        random.shuffle(self._idle_prompts)
+        self._idle_index = 0
+
     # -------------------------------------------------------- chat intake
 
     def submit(self, prompt: ChatPrompt) -> None:
@@ -181,8 +192,8 @@ class Director:
         One clip per group, on purpose: single-scene fillers are the finest
         eviction granularity, and popping one never truncates a story.
         """
-        if not self._idle_prompts or self._idle_target <= 0:
-            logger.info("[director] idle filler disabled (no prompts or target 0)")
+        if self._idle_target <= 0:
+            logger.info("[director] idle filler disabled (target 0)")
             return
         logger.info(
             "[director] idle filler: %d prompts, queue target %d",
@@ -190,6 +201,11 @@ class Director:
         )
         while True:
             await asyncio.sleep(_IDLE_POLL_S)
+            # The list may be empty — at startup or after a preset switch to
+            # a preset without idle prompts; keep polling so a later switch
+            # revives the filler without a restart.
+            if not self._idle_prompts:
+                continue
             # The configured target self-clamps under the deployment's live
             # playout capacity: filler must never be what fills the playout
             # queue to the brim, because a full playout queue pauses builds

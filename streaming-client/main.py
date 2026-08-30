@@ -27,7 +27,8 @@ import asyncio
 import logging
 import warnings
 
-from chat import ChatSource, TwitchChat, YouTubeChat
+from admin import AdminControl
+from chat import ChatPrompt, ChatSource, TwitchChat, YouTubeChat
 from config import Config
 from director import Director
 from moderator import Moderator
@@ -52,16 +53,18 @@ def setup_logging() -> None:
     warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
-def build_chat_sources(config: Config) -> list[ChatSource]:
-    """One source per configured platform. Add new platforms here."""
+def build_chat_sources(config: Config, commands: tuple[str, ...]) -> list[ChatSource]:
+    """One source per configured platform. Add new platforms here.
+
+    `commands` is every command word a source should deliver — the viewer
+    prompt command plus the admin commands; the router tells them apart.
+    """
     sources: list[ChatSource] = []
     if config.twitch_channel:
-        sources.append(TwitchChat(config.twitch_channel, config.chat_command))
+        sources.append(TwitchChat(config.twitch_channel, commands))
     if config.youtube_video_id and config.youtube_api_key:
         sources.append(
-            YouTubeChat(
-                config.youtube_video_id, config.youtube_api_key, config.chat_command
-            )
+            YouTubeChat(config.youtube_video_id, config.youtube_api_key, commands)
         )
     return sources
 
@@ -97,7 +100,21 @@ async def main() -> None:
         idle_prompts=config.idle_prompts,
         idle_queue_target=config.idle_queue_target,
     )
-    chat_sources = build_chat_sources(config)
+    admin = AdminControl(config.admin_users, upsampler, director)
+    if config.admin_users:
+        logger.info(
+            "admin commands (%s) enabled for: %s",
+            ", ".join(admin.commands), ", ".join(sorted(config.admin_users)),
+        )
+    else:
+        logger.info("no admins configured (ADMIN_USERS empty) — admin commands off")
+
+    def route_chat(prompt: ChatPrompt) -> None:
+        """Admin commands to the admin handler; everything else is a prompt."""
+        if not admin.handle(prompt):
+            director.submit(prompt)
+
+    chat_sources = build_chat_sources(config, (config.chat_command, *admin.commands))
     if not chat_sources:
         logger.warning(
             "no chat source configured (TWITCH_CHANNEL / YOUTUBE_VIDEO_ID) — "
@@ -115,13 +132,15 @@ async def main() -> None:
         asyncio.create_task(director.run_playout(), name="playout"),
     ]
     # Gated here because main treats any finished task as a shutdown signal,
-    # and run_idle returns immediately when the filler is configured off.
-    if config.idle_prompts and config.idle_queue_target > 0:
+    # and run_idle returns immediately when the target is 0. A preset with no
+    # idle prompts still gets the task: the filler idles until a `!switch`
+    # brings prompts.
+    if config.idle_queue_target > 0:
         tasks.append(asyncio.create_task(director.run_idle(), name="idle-filler"))
     else:
-        logger.info("idle filler off (no prompts file or IDLE_QUEUE_TARGET=0)")
+        logger.info("idle filler off (IDLE_QUEUE_TARGET=0)")
     tasks += [
-        asyncio.create_task(source.run(director.submit), name=f"chat-{source.name}")
+        asyncio.create_task(source.run(route_chat), name=f"chat-{source.name}")
         for source in chat_sources
     ]
 

@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import aiohttp
 
-from .base import ChatPrompt, ChatSource, parse_command
+from .base import ChatPrompt, ChatSource, match_command
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +34,14 @@ _RETRY_S = 30.0
 
 
 class YouTubeChat(ChatSource):
-    """Read `!prompt` messages from one live broadcast's chat."""
+    """Read command messages from one live broadcast's chat."""
 
     name = "youtube"
 
-    def __init__(self, video_id: str, api_key: str, command: str) -> None:
+    def __init__(self, video_id: str, api_key: str, commands: Sequence[str]) -> None:
         self._video_id = video_id
         self._api_key = api_key
-        self._command = command
+        self._commands = tuple(commands)
         self._session: aiohttp.ClientSession | None = None
         self._seen_ids: set[str] = set()
 
@@ -143,11 +143,12 @@ class YouTubeChat(ChatSource):
         message = snippet.get("displayMessage") or snippet.get(
             "textMessageDetails", {}
         ).get("messageText", "")
-        text = parse_command(message, self._command)
-        if text is None:
+        matched = match_command(message, self._commands)
+        if matched is None:
             return None
+        command, text = matched
         author = item.get("authorDetails", {}).get("displayName", "?")
-        return ChatPrompt(source=self.name, author=author, text=text)
+        return ChatPrompt(source=self.name, author=author, text=text, command=command)
 
     async def close(self) -> None:
         if self._session is not None:

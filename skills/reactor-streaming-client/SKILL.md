@@ -58,6 +58,7 @@ YouTube API ┘      │            (LLM, fail-closed)            chat only)
 | `config.py` | Sole reader of `.env`/environment/CLI. |
 | `reactor_link.py` | Everything `reactor_sdk`: connect/reconnect loop, both queue mirrors + `state_update` mirror, command sending, message fan-out, media → pacer, local orphan clearing. |
 | `director.py` | All scheduling: intake (cooldown, budget drop), moderate → upsample → positional enqueue; `run_playout` (curates the playout front with `move`; autoplay does the starting); `run_idle` (filler); backpressure relief. |
+| `admin.py` | Admin chat commands from the `ADMIN_USERS` allowlist (bare or `source:name` entries), routed ahead of the director in `main.py` so they cost no cooldown/moderation/LLM call: `!switch <preset>` swaps the creative preset live — resolved against `presets/` at switch time (bare names only, never paths), updating the upsampler's style and the idle prompt list; queued clips drain in their old style. |
 | `group_tag.py` | The metadata tag format + the shared policies: `pick_next` (play order), `viewer_insert_position` (build order), `is_generated`. |
 | `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length policy, chunk cap), retries. |
 | `moderator.py` | OpenAI moderations on its own endpoint; fail-closed. |
@@ -153,10 +154,11 @@ client changing:
 
 - **Upsampler** (`upsampler.py`): one OpenAI-compatible call per idea
   (`OPENAI_BASE_URL` — a corp gateway works). The system prompt embeds the
-  preset's style (`presets/<name>.json`, selected by `PRESET` — one JSON
-  bundle per stream identity carrying the style block and the premade idle
-  prompts; the shipped `default.json` is an original cartoon-sitcom world
-  with a crossover cast, and non-default presets stay untracked). The brief
+  preset's style (`presets/<name>.json`, selected by `PRESET` and swappable
+  live by an admin's `!switch` — one JSON bundle per stream identity
+  carrying the style block and the premade idle prompts; the shipped
+  `default.json` is an original cartoon-sitcom world with a crossover cast,
+  and non-default presets stay untracked). The brief
   is plain descriptive staging: self-contained scenes, explicit quoted
   dialogue with the speaker and voice tone named, a closing soundscape
   clause. Keep its constraint rules intact — each traces to measured model

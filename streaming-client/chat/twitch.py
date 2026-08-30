@@ -16,9 +16,9 @@ import asyncio
 import logging
 import random
 import ssl
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
-from .base import ChatPrompt, ChatSource, parse_command
+from .base import ChatPrompt, ChatSource, match_command
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +29,13 @@ _RECONNECT_MAX_S = 60.0
 
 
 class TwitchChat(ChatSource):
-    """Read `!prompt` messages from one Twitch channel, anonymously."""
+    """Read command messages from one Twitch channel, anonymously."""
 
     name = "twitch"
 
-    def __init__(self, channel: str, command: str) -> None:
+    def __init__(self, channel: str, commands: Sequence[str]) -> None:
         self._channel = channel.lstrip("#").lower()
-        self._command = command
+        self._commands = tuple(commands)
 
     async def run(self, on_prompt: Callable[[ChatPrompt], None]) -> None:
         backoff = _RECONNECT_MIN_S
@@ -86,7 +86,8 @@ class TwitchChat(ChatSource):
         prefix, _, rest = line[1:].partition(" PRIVMSG ")
         author = prefix.split("!", 1)[0]
         _, _, message = rest.partition(" :")
-        text = parse_command(message, self._command)
-        if text is None:
+        matched = match_command(message, self._commands)
+        if matched is None:
             return None
-        return ChatPrompt(source=self.name, author=author, text=text)
+        command, text = matched
+        return ChatPrompt(source=self.name, author=author, text=text, command=command)

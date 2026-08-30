@@ -172,6 +172,14 @@ class PromptUpsampler:
         self._style = style.strip() or "Cinematic, photoreal, rich natural light."
         self._max_chunks = max_chunks
 
+    def set_style(self, style: str) -> None:
+        """Swap the style block new scenes are written in (a preset switch).
+
+        Takes effect on the next LLM call; scenes already upsampled or queued
+        keep the style they were written in.
+        """
+        self._style = style.strip() or self._style
+
     async def upsample(
         self,
         raw_prompt: str,

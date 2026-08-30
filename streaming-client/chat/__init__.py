@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from .base import ChatPrompt, ChatSource, parse_command
+from .base import ChatPrompt, ChatSource, match_command
 from .twitch import TwitchChat
 from .youtube import YouTubeChat
 
-__all__ = ["ChatPrompt", "ChatSource", "TwitchChat", "YouTubeChat", "parse_command"]
+__all__ = ["ChatPrompt", "ChatSource", "TwitchChat", "YouTubeChat", "match_command"]
