@@ -222,10 +222,12 @@ instead of re-deriving these rules.
 ## What to expect from the timing
 
 - **Enqueue-to-ready** is one build, plus the wait behind earlier queued
-  builds; `queue_update` reports the clip turning `ready`. On the measured
-  sm100a profile a 14.375 s clip builds in about 15 s on four B200s (13 s on
-  eight); on the portable profile this deployment currently runs (triton VSA,
-  offloaded text encoder — see `fasth3.yaml`) the measured number is 31–35 s.
+  builds; `queue_update` reports the clip turning `ready`. On the shipped
+  profile (source-built sm100a kernel, regional compile, replicated DiT,
+  pinned offloaded text encoder) a 14.375 s clip builds in **14.4 s on four
+  B200s — 1.0x realtime**, flat across prompts. A `seconds` value the
+  deployment has not built before adds a one-off ~20 s compile on its first
+  build; see the recompile hazard under Deployment learnings.
 - **Play-to-first-frame** is near-instant for a ready clip — the frames are
   already in host memory; the only latency is the transport.
 - **`stop`** cuts to black within a fraction of a second: the emitter checks the
@@ -306,28 +308,101 @@ tree arrives through `requirements.txt` and an upgrade is a one-line bump.
 | `tests/` | Structural tests that need no GPU |
 | `client/` | Reference SDK client that drives the whole queue contract and saves what it receives |
 
-## Open questions for bring-up
+## Deployment learnings
 
-- **The sm100a VSA kernel does not launch.** fastvideo-kernel 0.3.5's CUDA
-  block-sparse kernel fails with `block_sparse_sm100a launch failed: invalid
-  argument` on driver 595 / CUDA 13.1 / B200, eager and compiled alike, so
-  `fasth3.yaml` runs the triton route at ~2.5x the build time. Retest each
-  fastvideo-kernel release and switch back — it also re-enables regional
-  compile, the other half of the measured fast profile.
-- **Host memory.** Every rank loads its own text encoder, so CPU-offloading it
-  across four ranks would want ~250 GB of host memory *and* pay a
-  transfer per clip. `fasth3.yaml` therefore keeps it resident on the GPU, which
-  the FSDP-sharded transformer leaves room for. Confirm against measured VRAM
-  before changing either flag, and re-size `resources.memory` in the manifest
-  from what real hardware uses — the values there are an opening estimate that
-  must also cover the built-clip buffer (`queue_size` × ~1 GB).
-- **Post-decode cost.** Asking FastVideo for frames in memory
-  (`return_frames=True`) also allocates a full fp32 mirror of the decoded video
-  and copies into it — several GB per clip that nothing reads, on top of the
-  uint8 conversion that is actually needed. The per-clip log line carries the
-  stage timings; if `PostDecodeFrameProcessStage` dominates the build, the fix
-  belongs upstream in FastVideo rather than here.
-- **The dependency closure is not yet exact.** `requirements.txt` lists what the
-  model's own code needs and leaves torchvision/torchaudio to the cu130 index.
-  Regenerate it from a `pip freeze` of the first successfully built image so a
-  rebuild is byte-comparable.
+Everything below was established empirically on a 4×B200 box (driver 595,
+CUDA 13.1 image, torch 2.12+cu130) while bringing this model to its published
+speed. Read this before touching `fasth3.yaml`, `requirements.txt`, or the
+engine seam.
+
+### The profile that hits 1.0x realtime, and why each piece is there
+
+Measured end state: **14.4 s per 14.375 s clip on four B200s**, level with
+FastVideo's published 15.5 s for this configuration (theirs includes file
+muxing; this deployment streams instead). Conditioning ~1 s, denoise ~8.5 s
+equivalent, decode ~2.5 s. Play-to-first-frame 0.22–0.25 s; `stop`-to-black
+~0.13 s; load-to-serving ~3.5 min, of which ~90 s is the warm-up build.
+
+- **The sm100a kernel is built from source at image build** (see
+  `requirements.txt`). The published fastvideo-kernel 0.3.5 wheel's sm_100a
+  binary fails *every* launch on this driver with `invalid argument`, eager
+  and compiled alike; the identical source compiled by the image's CUDA 13.1
+  nvcc is correct and fast. The PyPI sdist cannot stand in — it ships without
+  its CUTLASS/ThunderKittens submodules — so the pin is the git release
+  commit, with `TORCH_CUDA_ARCH_LIST=10.0a` from `build_env`. The triton
+  fallback route works everywhere but is ~2.5x slower.
+- **Prompts are padded to exactly 256 tokens** (`fasth3_backend.py`,
+  `PROMPT_TOKENS`) using the bundle's own tokenizer. Regional torch.compile
+  keys its capture on the packed sequence length, prompt tokens included, so
+  a novel prompt length recompiled the transformer — ~23 s per clip, on
+  almost every clip of a real feed. Upstream's benchmark never sees this
+  because it reuses one prompt for warm-up and every measured request. The
+  client-facing prompt in `ClipInfo` stays the original text.
+- **Replicated DiT + text encoder offloaded to pinned host memory** is what
+  fits four ranks and stays fast: FSDP sharding saves VRAM but roughly
+  doubled the denoise; the offloaded Qwen3-VL costs ~63 GB of pinned host
+  memory per rank and ~1 s page-in per clip (unpinned it was ~15 s).
+  `resources.memory` in `reactor.yaml` is sized for those four host copies
+  plus the built-clip buffer (`queue_size` x ~1 GB of uint8 pixels).
+- **flash-attn-4 and the runtime cannot be installed together naively**: the
+  runtime requires `protobuf>=7.35.1` (its generated bindings hard-reject an
+  older runtime at import) while FA4's pinned `nvidia-cutlass-dsl` caps
+  protobuf below 7 — a stale cap, since protobuf accepts old gencode on a
+  newer runtime. `build_env` sets `UV_OVERRIDE=/app/requirements.txt`, which
+  feeds the requirements back as resolver overrides and lets the higher floor
+  win. Side effect handled: overrides strip torch coupling from resolution,
+  so torchvision (0.27.x) and torchaudio (2.11.0, the newest cu130 build;
+  its `functional.resample` is pure torch ops) are pinned to torch-2.12
+  matched builds explicitly.
+
+### Known hazard, unresolved: varied clip lengths crash the engine
+
+Every distinct `seconds` value is a new compile shape. torch dynamo's
+`recompile_limit` defaults to **8**, and the regional-compile route runs
+fullgraph, where exceeding the limit is a **hard failure**
+(`FailOnRecompileLimitHit`) that kills the engine workers and takes the whole
+serving process down — observed live after enqueueing many different lengths.
+Constraints on a fix: the limit cannot be raised via environment variables in
+torch 2.12 (they do not map; verified), and it must be raised inside the
+*engine worker* processes — FastVideo itself sets it in code in two of its own
+modules (`layers/lora/linear.py`, `third_party/longcat_video/.../
+bsa_interface.py`), which suggests either an upstream patch, a
+`sitecustomize.py` baked into the image, or an import-time hook FastVideo
+runs in workers. Until one of those lands, **keep the set of distinct clip
+lengths per session small (well under 8)** — bucket lengths client-side —
+or set `inference_torch_compile: false` and accept the eager route's
+overhead. There are 14 legal lengths total; warming them all at load costs
+~20 s compile each.
+
+### Serving mechanics worth knowing
+
+- **The container needs a large `/dev/shm`** (`--shm-size=32g` in the local
+  invocation): the engine workers hand decoded frames back over torch shared
+  memory, warm-up never exercises that path (`return_frames=False`), and
+  docker's 64 MB default kills the first real clip. `reactor run` has no
+  shm flag today, hence the documented raw `docker run` equivalent.
+- **GPU count must divide H3's 56 attention heads** (1, 2, 4, 7, 8 …) — six
+  GPUs is not a configuration, the engine refuses at init.
+- **One session per local runtime.** A second client must join with
+  `connect(session_id=...)`; a plain `connect()` gets a 409 while a session
+  streams. Sessions are multi-connection: broadcasts and media fan out to
+  every connection, command replies go to the caller only.
+- **The SDK's local mode honours a custom port** via
+  `Reactor("fasth3", local=True, api_url="http://localhost:<port>")` — only
+  the default URL is rewritten to 8080.
+- **Audio is deliberately mono int16 at 48 kHz**: the transport downmixes
+  anyway and the runtime recorder corrupts stereo by concatenation, so the
+  downmix happens once, in float, before quantization.
+- The per-clip log line (`clip built: … = N.NNx realtime … stages={…}`) is
+  the number to watch; the runtime's log formatter drops structured extras,
+  which is why the figures live in the message text.
+
+### Still open
+
+- **Post-decode cost.** `return_frames=True` also allocates an fp32 mirror of
+  the decoded video that nothing reads — several GB per clip. If
+  `PostDecodeFrameProcessStage` ever dominates the stage split, the fix
+  belongs upstream in FastVideo.
+- **The dependency closure is not exact.** `requirements.txt` lists what the
+  model imports plus the pins above; regenerate it from a `pip freeze` of a
+  built image if byte-comparable rebuilds start mattering.

@@ -100,6 +100,18 @@ scene title/author, coming up — all reconstructed from the metadata echo).
 
 ## Model rules (`fasth3/`) — distilled from the Reactor cookbook
 
+- **[`fasth3/README.md`](./fasth3/README.md) is the model's full story** —
+  the client contract, the measured 1.0x-realtime profile, and the
+  **Deployment learnings** section that carries everything established
+  during bring-up: the source-built sm100a kernel (the published wheel
+  cannot launch on this driver), the 256-token prompt padding that keeps
+  regional compile on one shape, the protobuf/UV_OVERRIDE dependency story,
+  serving mechanics (`--shm-size`, one local session, GPU-count
+  divisibility), and the **unresolved recompile-limit hazard: more than a
+  handful of distinct per-clip `seconds` values per session hard-crashes the
+  engine** — bucket clip lengths client-side until it is fixed. Read that
+  section before touching `fasth3.yaml`, `requirements.txt`, or the engine
+  seam.
 - **fasth3 deliberately subclasses `ReactorModel` with its own `run()` loop**
   (not `ReactorPipeline`): its unit of work is a whole clip, and command
   handlers must answer while a clip builds or plays. Do not "normalize" this.
