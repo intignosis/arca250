@@ -21,8 +21,10 @@ fastvideo==0.2.1
 # release commit rather than installed as the published wheel: the wheel's
 # sm_100a binary fails every launch on driver 595 with "invalid argument",
 # while the same source compiled by the image's CUDA 13.1 nvcc runs correctly
-# (build_env pins TORCH_CUDA_ARCH_LIST=10.0a for it). The PyPI sdist cannot
-# stand in either — it ships without the CUTLASS/ThunderKittens submodules.
+# (build_env sets TORCH_CUDA_ARCH_LIST=10.0a;10.3a for it, covering B200 and
+# B300; the package's own device gate only accepts (10, 0), which
+# sitecustomize.py widens to match). The PyPI sdist cannot stand in either —
+# it ships without the CUTLASS/ThunderKittens submodules.
 fastvideo-kernel @ git+https://github.com/hao-ai-lab/FastVideo.git@1aed66737739e1fd6ea7271d3306a615a2a6bd55#subdirectory=fastvideo-kernel
 
 # FA4 CuTe kernels for the dense (text and audio) attention paths. Pinned to

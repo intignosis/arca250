@@ -5,7 +5,7 @@ model:
   name: fast-h3
   # Bare semver, no `v` prefix — the platform's release tag format; the
   # registration validator refuses a prefixed one.
-  version: 0.5.3
+  version: 0.5.4
   description: |
     Generate 768p video clips with synchronized audio from a queue of prompts.
     MiniMax-H3 (35B), distilled by FastVideo to four transformer forwards with
@@ -86,7 +86,10 @@ build:
     # build (see requirements.txt). Arch-specific (`a`) binaries do not run
     # forward even within a family, so the list carries both Blackwell
     # (10.0a, B200) and Blackwell Ultra (10.3a, B300) and the image serves
-    # either.
+    # either. The kernel package's Python-side gate only accepts (10, 0),
+    # though — sitecustomize.py widens it to this list; keep the two in
+    # sync (_VSA_BUILT_CAPABILITIES) or a B300 silently serves the ~2.5x
+    # slower Triton route in eager mode.
     TORCH_CUDA_ARCH_LIST: "10.0a;10.3a"
     # uv keys its built-wheel cache on the source revision alone, so an
     # arch-list change would silently reuse a wheel compiled for the old
@@ -105,11 +108,12 @@ build:
   #
   # PYTHONPATH=/app is load-bearing: it makes every Python interpreter in the
   # container — the runtime and each engine worker FastVideo spawns — import
-  # /app/sitecustomize.py at start, which is the only place dynamo's
-  # recompile limit can be raised inside the spawned workers (torch 2.12 maps
-  # no env var onto it, and FastVideo's own imports re-cap it at 16). The
-  # limit is FASTH3_DYNAMO_RECOMPILE_LIMIT; sized to the 14 legal clip
-  # lengths times the warmed canvases, with headroom.
+  # /app/sitecustomize.py at start, the only place its two fixes can land
+  # inside the spawned workers: raising dynamo's recompile limit (torch 2.12
+  # maps no env var onto it, and FastVideo's own imports re-cap it at 16;
+  # sized by FASTH3_DYNAMO_RECOMPILE_LIMIT to the 14 legal clip lengths
+  # times the warmed canvases, with headroom) and widening the VSA kernel's
+  # device gate to every arch in TORCH_CUDA_ARCH_LIST above.
   runtime_env:
     PYTORCH_ALLOC_CONF: expandable_segments:True
     HF_HUB_OFFLINE: "1"

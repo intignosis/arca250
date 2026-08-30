@@ -169,13 +169,22 @@ realtime), flat across prompts and lengths**; conditioning ~1 s, decode
 and removing any one of them regresses badly:
 
 1. **The sm100a VSA kernel is compiled from source at image build** (pinned
-   git commit in `requirements.txt`, `TORCH_CUDA_ARCH_LIST=10.0a` in
-   `build_env`). The published fastvideo-kernel wheel's sm_100a binary fails
-   every launch on driver 595 with `invalid argument`; the identical source
-   built by the image's CUDA 13.1 nvcc is correct. The PyPI sdist lacks its
-   CUTLASS/ThunderKittens submodules, so the git tree is the only workable
-   source. The `triton` VSA route is the portable fallback at ~2.5x the
-   build time.
+   git commit in `requirements.txt`, `TORCH_CUDA_ARCH_LIST=10.0a;10.3a` in
+   `build_env` — B200 and B300, since arch-specific binaries do not run
+   forward even within a family). The published fastvideo-kernel wheel's
+   sm_100a binary fails every launch on driver 595 with `invalid argument`;
+   the identical source built by the image's CUDA 13.1 nvcc is correct. The
+   PyPI sdist lacks its CUTLASS/ThunderKittens submodules, so the git tree
+   is the only workable source. The `triton` VSA route is the portable
+   fallback at ~2.5x the build time. **On B300 the compiled binary is not
+   enough**: the package's `is_supported` gate accepts capability `(10, 0)`
+   by equality only, so a `(10, 3)` device silently drops to Triton *and*
+   loses regional compile (the compile gate asks the same predicate) —
+   measured 0.74x realtime on eight B300s. `sitecustomize.py` widens the
+   gate to every arch in `TORCH_CUDA_ARCH_LIST` (a test pins the two lists
+   together); the regression signature in the pod log is `falling back to
+   the Triton-64 kernels` + `inference_torch_compile requested but
+   disabled`, once per worker.
 2. **Prompts are padded to exactly 256 tokens** (`PROMPT_TOKENS`,
    `fasth3_backend.py`) with the bundle's own tokenizer and a filler
    calibrated to cost exactly one token. Regional torch.compile keys its

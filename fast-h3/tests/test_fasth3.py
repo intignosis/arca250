@@ -1331,3 +1331,45 @@ def test_no_weights_are_committed_alongside_the_model():
         and not any(part.startswith(".") for part in path.relative_to(MODEL_DIR).parts)
     ]
     assert not offenders, f"weights never live in git: {offenders}"
+
+
+# --------------------------------------------------------------- sitecustomize
+#
+# The interpreter-wide fixes every container process loads via PYTHONPATH.
+
+
+def test_the_vsa_arch_gate_widens_to_every_built_capability(monkeypatch):
+    """The widened `_SM100` accepts exactly the arches the image compiles.
+
+    The kernel's gate is `get_device_capability(...) != _SM100`; the patch
+    must make that comparison pass for each capability in the build's
+    TORCH_CUDA_ARCH_LIST and keep refusing everything else.
+    """
+    import sys
+    import types
+
+    import sitecustomize
+
+    fake = types.ModuleType("fastvideo_kernel.block_sparse_attn_sm100a")
+    fake._SM100 = (10, 0)
+    monkeypatch.setitem(sys.modules, "fastvideo_kernel.block_sparse_attn_sm100a", fake)
+
+    sitecustomize._widen_vsa_arch_gate()
+    accepted = [cap for cap in [(9, 0), (10, 0), (10, 3), (12, 0)] if not (cap != fake._SM100)]
+    assert accepted == [(10, 0), (10, 3)]
+
+    # Idempotent: a second pass leaves the widened gate intact.
+    sitecustomize._widen_vsa_arch_gate()
+    assert not ((10, 3) != fake._SM100)
+
+
+def test_the_built_capabilities_mirror_the_manifest_arch_list(manifest):
+    """sitecustomize's capability set and TORCH_CUDA_ARCH_LIST move together."""
+    import sitecustomize
+
+    arch_list = manifest["build"]["build_env"]["TORCH_CUDA_ARCH_LIST"]
+    from_manifest = {
+        tuple(int(part) for part in entry.rstrip("a").split("."))
+        for entry in arch_list.split(";")
+    }
+    assert set(sitecustomize._VSA_BUILT_CAPABILITIES) == from_manifest

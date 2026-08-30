@@ -327,7 +327,7 @@ tree arrives through `requirements.txt` and an upgrade is a one-line bump.
 | `fasth3_session_rules.py` | Which commands each session state accepts |
 | `fasth3.yaml` | `inference:` the recipe, queue size and warm-up plan, `runtime:` weight layout and engine shape |
 | `reactor.yaml` | The manifest: identity, version, resources, runtime, image build |
-| `sitecustomize.py` | Raises dynamo's recompile limits in every container process, spawned engine workers included (via `PYTHONPATH=/app`) |
+| `sitecustomize.py` | Interpreter-wide fixes in every container process, spawned engine workers included (via `PYTHONPATH=/app`): raises dynamo's recompile limits, widens the VSA kernel's device gate to every built arch |
 | `tests/` | Structural tests that need no GPU |
 | `client/` | Reference SDK client that drives the whole queue contract and saves what it receives |
 
@@ -352,8 +352,9 @@ equivalent, decode ~2.5 s. Play-to-first-frame 0.22–0.25 s; `stop`-to-black
   and compiled alike; the identical source compiled by the image's CUDA 13.1
   nvcc is correct and fast. The PyPI sdist cannot stand in — it ships without
   its CUTLASS/ThunderKittens submodules — so the pin is the git release
-  commit, with `TORCH_CUDA_ARCH_LIST=10.0a` from `build_env`. The triton
-  fallback route works everywhere but is ~2.5x slower.
+  commit, with `TORCH_CUDA_ARCH_LIST=10.0a;10.3a` from `build_env` (B200 and
+  B300; arch-specific binaries do not run forward even within a family). The
+  triton fallback route works everywhere but is ~2.5x slower.
 - **Prompts are padded to exactly 256 tokens** (`fasth3_backend.py`,
   `PROMPT_TOKENS`) using the bundle's own tokenizer. Regional torch.compile
   keys its capture on the packed sequence length, prompt tokens included, so
@@ -377,6 +378,27 @@ equivalent, decode ~2.5 s. Play-to-first-frame 0.22–0.25 s; `stop`-to-black
   so torchvision (0.27.x) and torchaudio (2.11.0, the newest cu130 build;
   its `functional.resample` is pure torch ops) are pinned to torch-2.12
   matched builds explicitly.
+
+### B300 and the kernel's device gate (resolved)
+
+Compiling the kernels for `10.3a` is necessary but not sufficient on a B300:
+`fastvideo_kernel.block_sparse_attn_sm100a.is_supported` compares the
+device's compute capability against a `(10, 0)` constant **by equality**
+(upstream still does, as of the 0.3.5 pin), so a B300 — capability
+`(10, 3)`, with a correct sm_103a binary sitting in the same extension — is
+refused. The failure is silent and double: the engine falls back to the
+Triton-64 VSA kernels *and*, because regional compile asks the same
+predicate, the whole transformer stays **eager** (the pod logs
+`falling back to the Triton-64 kernels` and `inference_torch_compile
+requested but disabled` once per worker). Measured on eight B300s: 19.3 s
+per 14.38 s clip — 0.74x realtime — with denoise at ~10.3 s.
+
+The fix rides `sitecustomize.py` (the same import hook that raises the
+recompile limits, so it lands in every spawned engine worker): after the
+kernel module executes, its `_SM100` constant is replaced with a value equal
+to every capability in the image's `TORCH_CUDA_ARCH_LIST`. The two lists are
+kept in sync by a test. Watch the per-clip log line after any kernel or
+FastVideo bump: those two warnings coming back is the regression signature.
 
 ### Varied clip lengths and the recompile limit (resolved)
 

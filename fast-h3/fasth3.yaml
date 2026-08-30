@@ -46,8 +46,11 @@ inference:
   # Video Sparse Attention. 0.9 / tile 64 / sm100a is the checkpoint's trained
   # and measured policy (fastvideo_inference.json); the sm100a kernel is built
   # from source at image build time (see requirements.txt) because the
-  # published wheel's binary cannot launch on this driver. `triton` is the
-  # portable fallback for a non-Blackwell box and is much slower.
+  # published wheel's binary cannot launch on this driver. On Blackwell Ultra
+  # (B300, capability 10.3) the same route runs through the sm_103a binary in
+  # the same extension — sitecustomize.py widens the package's (10, 0)-only
+  # device gate, or the engine silently falls back. `triton` is the portable
+  # fallback for a non-Blackwell box and is much slower.
   vsa_sparsity: 0.9
   vsa_tile_size: 64
   vsa_kernel: sm100a
