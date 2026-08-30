@@ -37,6 +37,8 @@ def _load_preset(name_or_path: str) -> dict:
           "idle_prompts": ["premade prompt", ...]  (required; may be empty,
                           which disables the idle filler)
         }
+
+    Unknown keys are ignored, so presets can carry their own notes.
     """
     if "/" in name_or_path or name_or_path.endswith(".json"):
         path = Path(name_or_path)

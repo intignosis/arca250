@@ -3,11 +3,11 @@
 One prompt from chat becomes one *scene group*: the upsampler expands it into
 1..N self-contained scenes — a single shot, or a chunked short story — and
 the director enqueues them contiguously on the fast-h3 queue. The director is
-also the *playout* brain: autoplay stays off, and `run_playout` sends an
-explicit `play` for the next clip whenever the stream idles — viewer content
-before filler, judged purely from the metadata echo (`pick_next` in
-`group_tag.py`), because who asked for a clip is client-side knowledge the
-model deliberately never has. Rules that keep it coherent:
+also the *playout* brain: the model's autoplay starts the playout front the
+instant the stream idles (gapless), and `run_playout` curates that front with
+`move` — viewer content before filler, judged purely from the metadata echo
+(`pick_next` in `group_tag.py`), because who asked for a clip is client-side
+knowledge the model deliberately never has. Rules that keep it coherent:
 
   * The director is the queue's only writer. Both writers inside it — the
     viewer worker (`run`) and the idle filler (`run_idle`) — serialize group
@@ -228,29 +228,30 @@ class Director:
     # ------------------------------------------------------------- playout
 
     async def run_playout(self) -> None:
-        """Play the next clip whenever the stream is idle and one is ready.
+        """Curate the playout queue's front so autoplay always starts right.
 
-        Autoplay is deliberately off: the model plays oldest-first, but this
-        stream wants viewer content before filler, and who asked for a clip
-        is client-side knowledge (the metadata echo). `pick_next` is the
-        policy — first ready non-generated clip in queue order, else the
-        oldest ready one — and the overlay's "coming up" uses the same
-        function, so what is announced is what plays.
+        The model's autoplay chains the playout front the instant the stream
+        idles — a millisecond gap, against the half-second-plus a
+        client-sent `play` costs. So the client never sends `play` in steady
+        state; it keeps the *front* correct instead: whenever `pick_next`
+        (viewer content before filler, the same policy the overlay
+        announces) disagrees with the queue's actual front, one `move` fixes
+        it. Reordering happens while a clip plays, ahead of the moment it
+        matters, so autoplay's next start is already the right clip.
         """
         while True:
             await asyncio.sleep(_PLAYOUT_POLL_S)
             if not self._link.connected:
                 continue
             await self._relieve_build_backpressure()
-            if self._link.state.get("playing"):
+            clips = self._link.playout_clips
+            desired = pick_next(clips)
+            if desired is None or clips[0]["clip_id"] == desired["clip_id"]:
                 continue
-            choice = pick_next(self._link.playout_clips)
-            if choice is None:
-                continue
-            await self._link.send_command("play", {"clip_id": choice["clip_id"]})
-            # Let the resulting state_update land before re-checking; a race
-            # (the clip started on its own accord, or was popped) surfaces as
-            # a refusal the link logs, and the next tick re-evaluates.
+            await self._link.send_command(
+                "move", {"clip_id": desired["clip_id"], "position": 0}
+            )
+            # Let the resulting queue_update land before re-evaluating.
             await asyncio.sleep(_PLAYOUT_POLL_S)
 
     async def _relieve_build_backpressure(self) -> None:

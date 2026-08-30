@@ -59,8 +59,10 @@ clip), and optionally `seconds` (snapped into 5.167–14.375 s), `seed`, and
 Builds consume the generation queue front-first on their own; each finished
 clip crosses into the **playout queue** (`clip_generated`), which is
 entirely the client's to schedule: `play {clip_id}`, `move`, and `pop` work
-on both queues. This client keeps autoplay **off** and sends an explicit
-`play` per clip; a playing clip streams on `main_video` (1344×768 @ 24 fps
+on both queues. This client keeps autoplay **on** — the model chains the
+playout front the instant the stream idles, which is what keeps clip-to-clip
+gaps at milliseconds — and curates that front with `move`; a playing clip
+streams on `main_video` (1344×768 @ 24 fps
 at the default 16:9 canvas) and `main_audio` (48 kHz mono int16), then
 flushes to black until the next `play`. Both queues are bounded
 (`generation_capacity` / `playout_capacity` in `state_update`; generation
@@ -74,11 +76,12 @@ the idea calls for: a **single scene** of any legal length, or a **chunked
 short story** — up to `MAX_CHUNKS` short clips (each near the model's
 minimum length) that read as one story with a setup, development, and
 payoff. The director enqueues the group contiguously and also owns
-**playout**: autoplay stays off, and `run_playout` sends an explicit `play`
-whenever the stream idles, choosing viewer content before filler from the
-metadata echo (`pick_next` in `group_tag.py` — the overlay's "coming up"
-uses the same function, so what is announced is what plays). The rules that
-keep it coherent:
+**playout order**: the model's autoplay starts the playout front the instant
+the stream idles (millisecond gaps, no client round-trip), and `run_playout`
+curates that front with `move` — viewer content before filler, from the
+metadata echo (`pick_next` in `group_tag.py`; the overlay's "coming up" uses
+the same function, so what is announced is what plays). The rules that keep
+it coherent:
 
 1. The model builds generation-queue order and knows nothing about viewers
    vs filler — **who asked for a clip travels only in the metadata**, and
@@ -336,9 +339,9 @@ which took many iterations to stabilize) and from driving the fast-h3 queue:
   JSON well under 2000 chars; scene groups enqueued contiguously and only
   when they fully fit; all enqueues (viewer and filler) serialized through
   the director's one lock; eviction pops only `generated: true` clips;
-  moderation fails closed; autoplay stays off and the director's playout
-  loop is the only sender of `play`, always through `pick_next` over the
-  playout queue; viewer groups insert positionally ahead of filler (viewer
+  moderation fails closed; autoplay stays on and the director never sends
+  `play` in steady state — it curates the playout front with `move`, always
+  through `pick_next`; viewer groups insert positionally ahead of filler (viewer
   FIFO), and new prompts drop when the viewer backlog reaches the clip
   budget; every capacity read from `state_update`; pacer/sink never torn
   down on reconnect; sinks never block the event loop; overlays never

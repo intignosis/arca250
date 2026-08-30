@@ -12,10 +12,11 @@
   * a fan-out of every model message to registered listeners.
 
 The model contract this speaks is the fast-h3 clip queue (`../fast-h3/fasth3_types.py`
-is the authoritative reference): `enqueue` → `clip_queued`, readiness on
-`queue_update`, explicit `play` per clip, black between clips. Autoplay stays
-off: the director drives playout, choosing each next clip from the metadata
-echo (viewer content before filler — see `Director.run_playout`).
+is the authoritative reference): `enqueue` → `clip_queued`, builds crossing
+into the playout queue on `clip_generated`. Autoplay is on for gapless
+chaining; the director owns the *order*, curating the playout front with
+`move` from the metadata echo (viewer content before filler — see
+`Director.run_playout`).
 """
 
 from __future__ import annotations
@@ -228,9 +229,12 @@ class ReactorLink:
             self.playout_queued, self.playout_capacity,
         )
 
-        # Autoplay stays off (the session default): the director owns playout
-        # and sends an explicit `play` per clip, viewer content first, judged
-        # from the metadata echo (see Director.run_playout).
+        # Autoplay on: the model chains the playout queue's front clip the
+        # instant the stream idles, which is what keeps clip-to-clip gaps at
+        # milliseconds instead of a client round-trip. The director still
+        # owns the ORDER — it curates the playout front with `move`, viewer
+        # content first (see Director.run_playout).
+        await self._raw_command(reactor, "set_autoplay", {"enabled": True})
         self._first_state.set()
         self._ready.set()
         try:

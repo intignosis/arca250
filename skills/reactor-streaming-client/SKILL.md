@@ -57,7 +57,7 @@ YouTube API ┘      │            (LLM, fail-closed)            chat only)
 | `main.py` | Wiring and task lifecycle only. Tasks: link, director, playout, idle filler, chat sources, pacer. |
 | `config.py` | Sole reader of `.env`/environment/CLI. |
 | `reactor_link.py` | Everything `reactor_sdk`: connect/reconnect loop, both queue mirrors + `state_update` mirror, command sending, message fan-out, media → pacer, local orphan clearing. |
-| `director.py` | All scheduling: intake (cooldown, budget drop), moderate → upsample → positional enqueue; `run_playout` (the only sender of `play`); `run_idle` (filler); backpressure relief. |
+| `director.py` | All scheduling: intake (cooldown, budget drop), moderate → upsample → positional enqueue; `run_playout` (curates the playout front with `move`; autoplay does the starting); `run_idle` (filler); backpressure relief. |
 | `group_tag.py` | The metadata tag format + the shared policies: `pick_next` (play order), `viewer_insert_position` (build order), `is_generated`. |
 | `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length policy, chunk cap), retries. |
 | `moderator.py` | OpenAI moderations on its own endpoint; fail-closed. |
@@ -81,10 +81,13 @@ bit rests:
    and a group is enqueued only when all its scenes fit the generation queue
    (waiting filler is evicted to make room). Consecutive positions keep a
    group's scenes adjacent, so build order = scene order.
-3. **Play priority.** `run_playout` is the only sender of `play` (autoplay
-   stays off) and always chooses via `pick_next` over the playout queue:
-   first viewer clip in queue order, else the front filler. The overlay's
-   "coming up" reads the same function, so what is announced is what plays.
+3. **Play priority, gapless.** Autoplay is ON — the model chains the
+   playout front the instant the stream idles, keeping clip-to-clip gaps at
+   milliseconds instead of a client round-trip — and the director never
+   sends `play` in steady state: `run_playout` curates the playout *front*
+   with `move`, always via `pick_next` (first viewer clip in queue order,
+   else the front filler). The overlay's "coming up" reads the same
+   function, so what is announced is what plays.
 4. **Backpressure relief.** Generation pauses while the playout queue is
    full. When what fills it is built filler and a viewer clip waits to
    build, the playout loop pops one filler per tick (newest first) until the

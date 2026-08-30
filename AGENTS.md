@@ -71,11 +71,12 @@ scene title/author, coming up — all reconstructed from the metadata echo).
 ### Load-bearing invariants — violating any of these breaks the product
 
 1. **The two systems stay decoupled through the metadata.** The model knows
-   queue positions (`build_next`) and explicit `play`, never who asked for a
-   clip; viewer-vs-filler lives only in the metadata echo, and the client's
-   `pick_next` (in `group_tag.py`) is the single playout policy — the
-   director's `run_playout` is the only sender of `play`, and the overlay's
-   "coming up" reads the same function. Group sequencing rests on the
+   queue positions (`enqueue`'s `position`, `move`) and playback, never who
+   asked for a clip; viewer-vs-filler lives only in the metadata echo, and
+   the client's `pick_next` (in `group_tag.py`) is the single playout
+   policy — autoplay chains the playout front for gapless transitions, the
+   director's `run_playout` curates that front with `move`, and the
+   overlay's "coming up" reads the same function. Group sequencing rests on the
    Director being the queues' only writer (viewer worker and idle filler
    serialize through one lock), viewer FIFO on positional inserts ahead of
    filler (`viewer_insert_position` → `enqueue`'s `position`), and a group
