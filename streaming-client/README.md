@@ -109,11 +109,16 @@ editing (rationale in the module docstring):
   prompt must re-describe the full setting/subjects/style from scratch;
 - the LLM is asked for < 750 chars but `_sanitize` **hard-truncates to 800**
   (`MAX_PROMPT_CHARS`, the model's server-side cap) because LLMs can't count;
-- scene `seconds` are chosen by the LLM and **clamped to the live bounds**
-  from `state_update` (`clip_seconds_min/max`), never hardcoded;
-- fasth3 renders audio including clear spoken language, so the prompt asks
-  for explicit quoted dialogue (who speaks, the exact words, the tone)
-  whenever the idea implies speech, plus a soundscape clause per scene;
+- the scene-prompt **format is distilled from the checkpoint's official
+  paper prompts**: `[Shot N]` segments with cut timestamps, `S1`/`S2`
+  character tags, a dedicated camera sentence (movement + amplitude +
+  speed), dialogue inside the `<d>[Language] ...</d>` speech marker with
+  the voice described, explicit constraint assertions ("no readable signs,
+  captions, or logos"), and a closing diegetic soundscape;
+- **a single-scene generation always runs the maximum clip length**
+  (enforced in code, not just asked of the LLM); short lengths are reserved
+  for transition chunks inside multi-scene stories, and `seconds` are
+  always clamped to the live bounds from `state_update`;
 - safety is the moderator's job, upstream — the upsampler stages the idea
   faithfully and never softens or reinterprets it.
 
