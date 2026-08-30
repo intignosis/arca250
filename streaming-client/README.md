@@ -124,9 +124,15 @@ editing (rationale in the module docstring):
 - the scene-prompt **format is distilled from the checkpoint's official
   paper prompts**: `[Shot N]` segments with cut timestamps, `S1`/`S2`
   character tags, a dedicated camera sentence (movement + amplitude +
-  speed), dialogue inside the `<d>[Language] ...</d>` speech marker with
-  the voice described, explicit constraint assertions ("no readable signs,
-  captions, or logos"), and a closing diegetic soundscape;
+  speed), dialogue inside the `<d>[Language] ...</d>` speech marker,
+  explicit constraint assertions ("no readable signs, captions, or
+  logos"), and a closing diegetic soundscape;
+- **dialogue is specified with precision, not thinned out**: every line is
+  anchored to one shot and one visibly speaking character, carries a full
+  voice description (age, timbre, pace, delivery), gets ~2 words/second of
+  screen time with quiet around it, one voice at a time, the soundscape
+  stated to drop under the words, and clean marker text (no caps, no
+  onomatopoeia) — imprecise or crowded speech is what renders as gibberish;
 - **a single-scene generation always runs the maximum clip length**
   (enforced in code, not just asked of the LLM); short lengths are reserved
   for transition chunks inside multi-scene stories, and `seconds` are

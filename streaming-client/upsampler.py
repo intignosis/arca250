@@ -29,6 +29,15 @@ actually behaves, so keep them intact when editing:
     explicit constraint assertions ("no readable signs, captions, or
     logos"), and a closing diegetic soundscape. The model was trained on
     that shape; prompts in it render dramatically better.
+  * **Dialogue is a precision problem, not a quantity problem.** Speech
+    renders exactly as well as it is specified: a line anchored to one shot
+    and one visibly speaking character, with a fully described voice
+    (age, timbre, pace, delivery), enough screen time (~2 words/second),
+    one voice at a time, the soundscape stated to drop under the words, and
+    clean marker text (plain words, no caps/onomatopoeia) comes out clear;
+    a vague, floating, or crowded line comes out as gibberish. The prompt's
+    DIALOGUE section encodes each of those as a requirement — tighten
+    staging before ever cutting content.
   * **Length policy: a single-clip generation always runs the maximum
     length** (the live `clip_seconds_max` from `state_update`), enforced in
     code after validation — its 2-4 internal shots carry the variety. The
@@ -103,17 +112,42 @@ shape; follow it inside every scene prompt, compressed to the char budget:
 - Split the scene into 2-4 shots. Every later shot opens "[Shot N] At
   00:0X.000, the camera cuts to <view> as <action>", with timestamps spread
   across the scene's duration.
-- Dialogue uses the model's speech marker, never plain narration:
-  S1 shouts in a hoarse, panicked dad voice: <d>[English] It's alive!</d>
-  Name the speaker's tag, describe the voice, and put the exact words
-  inside <d>[Language] ...</d>. Do not paraphrase speech the viewer asked
-  for, and never put words outside the marker.
 - State the constraints that must hold as explicit facts in the prompt:
   "no readable signs, captions, or logos", "their hands stay empty
   throughout" — the model honours what the prompt asserts.
 - End with one or two sentences of soundscape: the diegetic sounds
   synchronized to the actions (foley, impacts, breathing, room tone), and
   music only when wanted, named by instrument and mood.
+
+DIALOGUE — precision is what keeps speech intelligible. The model renders
+speech exactly as well as it is specified: a vague or crowded line comes out
+as gibberish, a precisely staged one comes out clear. Every line must
+satisfy ALL of this:
+- **Anchor it to a moment and a mouth.** The line belongs to one shot, at a
+  stated beat of that shot, spoken by one tagged character who is visibly
+  speaking — face toward camera, mouth unobstructed, mid-shot or closer at
+  that instant. Never let a line float over off-screen action.
+- **Specify the voice fully**: age, timbre, pace, and delivery, every time —
+  "S1 says in a deep, slow, clearly enunciated dad voice" — not just
+  "shouts". Calm, deliberate delivery renders best; say so explicitly.
+- **Give the words their time.** Speech runs about two words per second: fit
+  the line to the screen time around its beat (a 4-second beat carries ~8
+  words comfortably), and keep a breath of quiet before and after the line
+  rather than butting it against another line or a loud effect.
+- **One voice at a time.** One line per shot, one speaker per shot, never
+  overlapping speakers; an exchange spans shots, each reply in its own.
+  At most two speaking characters per scene.
+- **Keep the audio field clear under the line**: state that the soundscape
+  drops beneath the words (no crashes, stings, or crowd noise simultaneous
+  with speech) — effects and music live in the beats between lines.
+- **Write marker text the voice can actually say**, exactly:
+  S1 says in a deep, calm, clearly enunciated dad voice: <d>[English] Nobody
+  panic. Dad's got this.</d>
+  Plain words, natural word order, standard spelling and punctuation; no
+  ALL CAPS, no stretched spellings ("noooo"), no interjection chains, no
+  onomatopoeia — sound effects belong to the soundscape, never inside
+  <d>...</d>. Spoken words never appear outside the marker, and speech the
+  viewer explicitly asked for is kept verbatim.
 
 WRITING THE SCENE PROMPTS:
 - Strong nouns and verbs over piles of adjectives; vivid but precise.
