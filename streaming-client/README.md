@@ -25,7 +25,7 @@ YouTube API ┘      │   └───▶ PromptUpsampler (OpenAI-compatible LL
                    │              ▲
 idle_prompts.txt ──┘ (filler)     │
                    ▼  enqueue: scene groups, tagged via clip metadata
-              ReactorLink ◀──▶ fasth3 (clip queue, autoplay on)
+              ReactorLink ◀──▶ fasth3 (clip queue; director sends play)
                    │  24 fps video + 48 kHz audio (per clip, black between)
                    ▼
                  Pacer  ──── constant-rate clock: fills gaps with
@@ -54,14 +54,15 @@ idle_prompts.txt ──┘ (filler)     │
 fasth3 (see `../fasth3/fasth3_types.py`, the authoritative client-facing contract) is
 a **clip queue**: `enqueue` takes a prompt (≤ 800 chars), an opaque `metadata`
 string (≤ 2000 chars, echoed back on every message that references the clip),
-and optionally `seconds` (snapped into 5.167–14.375 s) and `seed`. Builds run
-through the queue oldest-first; readiness is announced on `queue_update`.
-With `set_autoplay` on — this client turns it on after every connect — the
-oldest ready clip plays on its own whenever nothing is playing, streaming on
-`main_video` (1344×768 @ 24 fps at the default 16:9 canvas) and `main_audio`
-(48 kHz mono int16), then flushes to black. The queue is bounded
-(`queue_capacity` in `state_update`, default 10) and a full queue refuses
-`enqueue` with a `command_error`.
+and optionally `seconds` (snapped into 5.167–14.375 s), `seed`, and
+`build_next` (the clip enters ahead of every clip whose build has not
+started, instead of at the back). Builds run through the queue front to
+back; readiness is announced on `queue_update`. This client keeps autoplay
+**off** and sends an explicit `play {clip_id}` per clip; a playing clip
+streams on `main_video` (1344×768 @ 24 fps at the default 16:9 canvas) and
+`main_audio` (48 kHz mono int16), then flushes to black until the next
+`play`. The queue is bounded (`queue_capacity` in `state_update`, default
+10) and a full queue refuses `enqueue` with a `command_error`.
 
 ## Scene groups
 
@@ -69,15 +70,22 @@ One chat prompt becomes one **scene group**. The upsampler picks the shape
 the idea calls for: a **single scene** of any legal length, or a **chunked
 short story** — up to `MAX_CHUNKS` short clips (each near the model's
 minimum length) that read as one story with a setup, development, and
-payoff. The director enqueues the group back-to-back. Sequential playback
-needs no extra orchestration — it falls out of three facts, and breaks if
-any is violated:
+payoff. The director enqueues the group contiguously and also owns
+**playout**: autoplay stays off, and `run_playout` sends an explicit `play`
+whenever the stream idles, choosing viewer content before filler from the
+metadata echo (`pick_next` in `group_tag.py` — the overlay's "coming up"
+uses the same function, so what is announced is what plays). The rules that
+keep it coherent:
 
-1. fasth3's queue is strict FIFO and autoplay plays the oldest ready clip, so
-   **enqueue order is play order**.
+1. The model builds queue-order and knows nothing about viewers vs filler —
+   **who asked for a clip travels only in the metadata**, and both build
+   priority (popping unbuilt filler ahead of a viewer group) and play
+   priority (`pick_next`) are the client's decisions. The two systems stay
+   decoupled.
 2. The director is the **only writer** to the queue — both its viewer worker
    and its idle filler serialize group enqueues through one lock — so groups
-   never interleave.
+   never interleave, and within each class `pick_next` follows queue order,
+   which keeps a group's scenes sequential.
 3. A group is enqueued only once **all** its scenes fit in the remaining
    capacity, so it can't wedge half-in. Viewer groups may make that room by
    evicting filler clips (see "Idle filler" below).
@@ -151,18 +159,32 @@ run through the same upsampler and style but are forced to **one scene per
 group** — the finest eviction granularity, and popping one never truncates a
 story — and their metadata carries `generated: true`.
 
-Viewers always outrank filler, in three ways:
+Viewers always outrank filler — while staying first-come-first-served among
+themselves — in four ways:
 
+- an arriving viewer group **pops every unbuilt filler clip** first, so its
+  scenes are the next builds the GPUs pick, sitting behind only the viewer
+  clips already waiting. Built filler survives as the stream's fallback,
+  and `run_idle` refills once chat goes quiet. (The model's `build_next`
+  flag is deliberately not used here: front-of-queue insertion cannot
+  express "behind the other viewers".);
+- the playout loop **plays** ready viewer clips before ready filler
+  (`pick_next`), so even an already-built filler waits;
 - the filler stands down whenever a viewer prompt is pending (including one
   that arrived while the filler's LLM call was in flight — the group is
   dropped before enqueueing);
-- when a viewer group doesn't fit the remaining capacity, the director
-  **evicts** filler clips with `pop` — newest-queued first, so the filler
-  closest to playing (likeliest already built) survives and the stream stays
-  fed. Only clips tagged `generated: true` are candidates; a playing clip is
-  not in the queue, so playback is never cut;
-- eviction recognizes fillers purely by the metadata echo, so it also works
-  after a client restart that has no memory of enqueueing them.
+- when a viewer group still doesn't fit, the director **evicts** built
+  filler with `pop`, newest-queued first, so the filler closest to playing
+  survives and the stream stays fed. Only clips tagged `generated: true`
+  are ever popped; a playing clip is not in the queue, so playback is never
+  cut.
+
+When the queue is full of *viewer* content — nothing evictable left — new
+prompts are **dropped**, with the drop logged: one prompt never stalls the
+pipeline waiting for room. Capacity is read live from `state_update`
+(`queue_capacity`), never assumed. Everything above reads the metadata echo,
+so it survives client restarts and works on clips this process has no memory
+of enqueueing.
 
 The target (6) sits deliberately under the queue capacity (10): the gap is
 headroom a viewer group can take without any eviction at all.
@@ -248,8 +270,8 @@ python main.py --sink rtmp --rtmp-url rtmp://live.twitch.tv/app/STREAM_KEY
 
 Then type `!prompt a lighthouse in a storm` in chat. Expect: an upsampler log
 with the scenes, `queued ... scene 1/n` lines, and — after roughly the clip's
-own duration of build time per scene — `[now playing]` lines as autoplay runs
-the group. With the idle filler on (the default), `[auto]`-tagged clips fill
+own duration of build time per scene — `[now playing]` lines as the playout
+loop runs the group. With the idle filler on (the default), `[auto]`-tagged clips fill
 the queue within the first minute and the stream shows content instead of
 black between viewer groups; with it off, black between groups is the model's
 contract, not a bug.
@@ -306,9 +328,13 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
   JSON well under 2000 chars; scene groups enqueued contiguously and only
   when they fully fit; all enqueues (viewer and filler) serialized through
   the director's one lock; eviction pops only `generated: true` clips;
-  moderation fails closed; autoplay re-enabled on every connect; pacer/sink
-  never torn down on reconnect; sinks never block the event loop; overlays
-  never mutate the pacer's frame and stay within a few ms per compose.
+  moderation fails closed; autoplay stays off and the director's playout
+  loop is the only sender of `play`, always through `pick_next`; viewer
+  groups pop unbuilt filler and append (viewer FIFO), and drop when the
+  queue is full of viewer content; queue capacity always read from
+  `state_update`; pacer/sink never torn down on reconnect; sinks never
+  block the event loop; overlays never mutate the pacer's frame and stay
+  within a few ms per compose.
 - `../fasth3/fasth3_types.py` is the wire contract. If the model's schema moves
   (new fields, renamed messages), update `reactor_link.py`'s mirror and the
   director's message handling together, and re-check this README's model

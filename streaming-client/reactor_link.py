@@ -12,9 +12,9 @@
 
 The model contract this speaks is the fasth3 clip queue (`../fasth3/fasth3_types.py`
 is the authoritative reference): `enqueue` → `clip_queued`, readiness on
-`queue_update`, autoplay for hands-free sequential playback, black between
-clips. The link turns autoplay on right after every (re)connect, which is
-what makes playback fully queue-driven: enqueue order is play order.
+`queue_update`, explicit `play` per clip, black between clips. Autoplay stays
+off: the director drives playout, choosing each next clip from the metadata
+echo (viewer content before filler — see `Director.run_playout`).
 """
 
 from __future__ import annotations
@@ -213,11 +213,9 @@ class ReactorLink:
             self.queued, self.queue_capacity,
         )
 
-        # Autoplay makes playback purely queue-driven: the oldest ready clip
-        # starts whenever nothing is playing, so enqueue order is play order
-        # and scene groups run back-to-back without a `play` per clip.
-        await self._raw_command(reactor, "set_autoplay", {"enabled": True})
-
+        # Autoplay stays off (the session default): the director owns playout
+        # and sends an explicit `play` per clip, viewer content first, judged
+        # from the metadata echo (see Director.run_playout).
         self._first_state.set()
         self._ready.set()
         try:

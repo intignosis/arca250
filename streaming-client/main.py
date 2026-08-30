@@ -4,7 +4,7 @@ Wiring, in dependency order:
 
   chat sources ──▶ Director ──▶ PromptUpsampler (OpenAI-compatible LLM)
                       │
-                      ▼ enqueue (scene groups, tagged via metadata)
+                      ▼ enqueue (scene groups, tagged via metadata) + play
                  ReactorLink ◀──▶ served fasth3 model (local or hosted)
                       │ frames / audio
                       ▼
@@ -112,6 +112,7 @@ async def main() -> None:
     tasks: list[asyncio.Task] = [
         asyncio.create_task(link.run(), name="reactor-link"),
         asyncio.create_task(director.run(), name="director"),
+        asyncio.create_task(director.run_playout(), name="playout"),
     ]
     # Gated here because main treats any finished task as a shutdown signal,
     # and run_idle returns immediately when the filler is configured off.

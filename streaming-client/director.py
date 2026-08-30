@@ -1,22 +1,28 @@
 """The director: viewer prompts in, tagged scene groups on the model's queue.
 
 One prompt from chat becomes one *scene group*: the upsampler expands it into
-1..N self-contained scenes — a single shot, or a chunked short story of short
-clips — and the director enqueues them back-to-back on the fasth3 queue.
-Sequential playback needs no orchestration beyond that — fasth3's queue is
-strict FIFO, builds run oldest-first, and autoplay plays the oldest ready
-clip — so keeping a group's scenes contiguous *in the queue* is what keeps
-them contiguous *on the stream*. Three rules protect that:
+1..N self-contained scenes — a single shot, or a chunked short story — and
+the director enqueues them contiguously on the fasth3 queue. The director is
+also the *playout* brain: autoplay stays off, and `run_playout` sends an
+explicit `play` for the next clip whenever the stream idles — viewer content
+before filler, judged purely from the metadata echo (`pick_next` in
+`group_tag.py`), because who asked for a clip is client-side knowledge the
+model deliberately never has. Rules that keep it coherent:
 
   * The director is the queue's only writer. Both writers inside it — the
     viewer worker (`run`) and the idle filler (`run_idle`) — serialize group
     enqueues through one lock, so groups can never interleave.
-  * A group is only enqueued once the whole group fits in the remaining
-    queue capacity, so it cannot get stuck half-in (with the model refusing
-    the rest) while another group's turn comes up.
-  * Viewer prompts outrank filler: a viewer group evicts filler clips
-    (`pop`) when it needs their slots, and the filler stands down whenever
-    viewer work is pending.
+  * A group is only enqueued when the whole group fits the remaining
+    capacity (after any eviction), so it cannot get stuck half-in; a queue
+    already full of viewer content drops new prompts instead of stalling
+    them behind a wait. Capacity is whatever the connected deployment
+    reports in `state_update`, never a constant.
+  * Viewer prompts outrank filler, and stay first-come-first-served among
+    themselves: an arriving viewer group pops every *unbuilt* filler clip
+    (built ones survive as the stream's fallback) and appends — behind
+    waiting viewer clips, ahead of nothing else unbuilt — then eviction
+    (`pop`, newest first) reclaims built-filler slots when capacity needs
+    it, and the filler stands down whenever viewer work is pending.
 
 Every scene carries the group's identity in the clip's `metadata` — an opaque
 string fasth3 stores and echoes back on every message that references the
@@ -41,7 +47,7 @@ import time
 from collections.abc import Sequence
 
 from chat import ChatPrompt
-from group_tag import parse_group_tag
+from group_tag import is_generated, parse_group_tag, pick_next
 from moderator import Moderator
 from reactor_link import ReactorLink
 from upsampler import PromptUpsampler, SceneGroup
@@ -54,12 +60,16 @@ logger = logging.getLogger(__name__)
 # backlog on top of that serves nobody.
 _PENDING_LIMIT = 24
 
-# Enqueue retry cadence while the model refuses (queue full, reconnect, ...).
+# Enqueue retry cadence while the model refuses (reconnect mid-command, ...).
 _RETRY_DELAY_S = 3.0
-_CAPACITY_POLL_S = 1.0
 
 # How often the idle filler re-checks whether the queue wants topping up.
 _IDLE_POLL_S = 3.0
+
+# How often the playout loop re-checks for an idle stream with a ready clip.
+# state_update/queue_update broadcasts keep the mirrors fresh; polling them is
+# what survives a missed message.
+_PLAYOUT_POLL_S = 0.5
 
 
 class Director:
@@ -115,11 +125,29 @@ class Director:
 
     # ------------------------------------------------- viewer prompt loop
 
+    def _viewer_clips_queued(self) -> int:
+        """Queued clips that are viewer content (anything not tagged filler)."""
+        return sum(
+            1 for clip in self._link.queue_clips if not is_generated(clip)
+        )
+
     async def run(self) -> None:
         """Moderate, upsample, and enqueue pending prompts, one group at a time."""
         while True:
             prompt = await self._pending.get()
             try:
+                # A queue already full of viewer content takes no more: the
+                # prompt is dropped now, before it costs a moderation and an
+                # LLM call. Capacity is whatever the connected deployment
+                # reports, never a constant.
+                if self._viewer_clips_queued() >= self._link.queue_capacity:
+                    logger.warning(
+                        "[director] queue is full of viewer clips (%d/%d); "
+                        "dropping prompt from %s",
+                        self._viewer_clips_queued(), self._link.queue_capacity,
+                        prompt.author,
+                    )
+                    continue
                 verdict = await self._moderator.review(prompt.text)
                 if verdict is not None:
                     logger.warning(
@@ -187,26 +215,78 @@ class Director:
             except Exception as error:
                 logger.error("[director] idle fill failed: %s", error)
 
+    # ------------------------------------------------------------- playout
+
+    async def run_playout(self) -> None:
+        """Play the next clip whenever the stream is idle and one is ready.
+
+        Autoplay is deliberately off: the model plays oldest-first, but this
+        stream wants viewer content before filler, and who asked for a clip
+        is client-side knowledge (the metadata echo). `pick_next` is the
+        policy — first ready non-generated clip in queue order, else the
+        oldest ready one — and the overlay's "coming up" uses the same
+        function, so what is announced is what plays.
+        """
+        while True:
+            await asyncio.sleep(_PLAYOUT_POLL_S)
+            if not self._link.connected or self._link.state.get("playing"):
+                continue
+            choice = pick_next(self._link.queue_clips)
+            if choice is None:
+                continue
+            await self._link.send_command("play", {"clip_id": choice["clip_id"]})
+            # Let the resulting state_update land before re-checking; a race
+            # (the clip started on its own accord, or was popped) surfaces as
+            # a refusal the link logs, and the next tick re-evaluates.
+            await asyncio.sleep(_PLAYOUT_POLL_S)
+
     # ---------------------------------------------------------- enqueueing
 
     async def _enqueue_group(self, group: SceneGroup) -> None:
+        """Put one group on the model's queue, or drop it and say why.
+
+        Viewer groups take precedence over filler in build order the direct
+        way: every *unbuilt* filler clip is popped first (`run_idle` refills
+        once chat goes quiet), so the appended viewer scenes are the front of
+        the unbuilt segment — behind any viewer clips already waiting, which
+        keeps viewer requests first-come-first-served. Built filler survives
+        for the stream to fall back on; the playout policy already prefers
+        viewer clips over it. When even evicting every filler cannot fit the
+        group, the group is dropped — a queue full of viewer content takes
+        no more, rather than stalling every later prompt behind a wait.
+        """
         scene_count = len(group.scenes)
         async with self._enqueue_lock:
-            # Hold until the whole group fits, so its scenes land contiguously.
-            # Viewer groups may take filler slots; filler never evicts anything
-            # and simply keeps waiting (in practice it never has to: run_idle
-            # only fills below the target, which sits under the capacity).
-            while True:
+            free = self._link.queue_capacity - self._link.queued
+            if not group.generated:
+                # Judge the fit before touching anything: when even evicting
+                # every filler could not make room, drop the group with the
+                # queue intact instead of spending fillers on a lost cause.
+                evictable = sum(
+                    1 for clip in self._link.queue_clips if is_generated(clip)
+                )
+                if free + evictable < scene_count:
+                    logger.warning(
+                        "[director] no room for %s (%d scenes, %d free, %d "
+                        "evictable); dropping the group",
+                        group.group_id, scene_count, free, evictable,
+                    )
+                    return
+                await self._pop_unbuilt_fillers()
                 free = self._link.queue_capacity - self._link.queued
-                if free >= scene_count:
-                    break
-                if not group.generated:
+                if free < scene_count:
                     popped = await self._evict_fillers(scene_count - free)
                     if popped:
                         # Give the pops' queue_update a moment to land.
-                        await asyncio.sleep(0.2)
-                        continue
-                await asyncio.sleep(_CAPACITY_POLL_S)
+                        await asyncio.sleep(0.3)
+                    free = self._link.queue_capacity - self._link.queued
+            if free < scene_count:
+                logger.warning(
+                    "[director] no room for %s (%d scenes, %d free, nothing "
+                    "evictable); dropping the group",
+                    group.group_id, scene_count, free,
+                )
+                return
 
             for index, scene in enumerate(group.scenes, start=1):
                 metadata = json.dumps(
@@ -249,6 +329,33 @@ class Director:
                         group.group_id, index, scene_count, _RETRY_DELAY_S,
                     )
                     await asyncio.sleep(_RETRY_DELAY_S)
+
+    async def _pop_unbuilt_fillers(self) -> int:
+        """Pop every filler clip whose build has not finished.
+
+        This is what puts an arriving viewer group at the head of the unbuilt
+        queue without any model-side priority: with no unbuilt filler left,
+        the appended viewer scenes are the next builds. A filler mid-build
+        looks identical to a waiting one on the wire and gets popped too —
+        the model discards its result on completion; the slot frees now.
+        Returns how many pops succeeded.
+        """
+        popped = 0
+        for clip in list(self._link.queue_clips):
+            if clip.get("ready") or not is_generated(clip):
+                continue
+            reply = await self._link.send_command(
+                "pop", {"clip_id": clip["clip_id"]}
+            )
+            if isinstance(reply, dict) and "clip" in reply:
+                popped += 1
+        if popped:
+            logger.info(
+                "[director] popped %d unbuilt filler clip(s) for a viewer group",
+                popped,
+            )
+            await asyncio.sleep(0.3)
+        return popped
 
     async def _evict_fillers(self, needed: int) -> int:
         """Pop up to `needed` generated clips to make room for a viewer group.

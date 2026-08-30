@@ -29,3 +29,30 @@ def parse_group_tag(metadata: str) -> dict | None:
     if not isinstance(tag, dict) or "group_id" not in tag:
         return None
     return tag
+
+
+def is_generated(clip: dict) -> bool:
+    """Whether a clip is idle filler, judged purely from its metadata echo.
+
+    Anything without a `generated: true` tag counts as viewer content —
+    including untagged clips some other client enqueued.
+    """
+    tag = parse_group_tag(clip.get("metadata", ""))
+    return bool(tag and tag.get("generated"))
+
+
+def pick_next(clips: list[dict], ready_only: bool = True) -> dict | None:
+    """The clip that should play next: viewer content first, then filler.
+
+    The single playout policy, shared by the director (which sends the
+    `play`) and the overlay (which shows "coming up") so the broadcast never
+    announces one clip and plays another. Within each class, queue order —
+    which is build-completion order — decides, so a group's scenes stay
+    sequential. With `ready_only` false, the same preference over the whole
+    queue: what *will* play next once built.
+    """
+    pool = [c for c in clips if c.get("ready")] if ready_only else clips
+    for clip in pool:
+        if not is_generated(clip):
+            return clip
+    return pool[0] if pool else None

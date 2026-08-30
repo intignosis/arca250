@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from typing import TYPE_CHECKING
 
-from group_tag import parse_group_tag
+from group_tag import parse_group_tag, pick_next
 
 from .base import Overlay
 
@@ -87,9 +87,16 @@ class StreamStatusOverlay(Overlay):
             self._current = None
 
     def _up_next(self) -> dict | None:
-        """Display info for the queue's head — the clip autoplay takes next."""
+        """Display info for the clip the director will play next.
+
+        The same `pick_next` the playout loop uses (viewer content before
+        filler, ready clips preferred), so the overlay never announces one
+        clip while another plays. With nothing ready yet, the preference
+        runs over the whole queue: what will play once built.
+        """
         clips = self._link.queue_clips
-        return _clip_display(clips[0]) if clips else None
+        choice = pick_next(clips) or pick_next(clips, ready_only=False)
+        return _clip_display(choice)
 
     # --------------------------------------------------------- composing
 
