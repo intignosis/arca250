@@ -1,11 +1,11 @@
-"""Chat-driven fasth3 livestream client. See README.md for the full picture.
+"""Chat-driven fast-h3 livestream client. See README.md for the full picture.
 
 Wiring, in dependency order:
 
   chat sources ──▶ Director ──▶ PromptUpsampler (OpenAI-compatible LLM)
                       │
                       ▼ enqueue (scene groups, tagged via metadata) + play
-                 ReactorLink ◀──▶ served fasth3 model (local or hosted)
+                 ReactorLink ◀──▶ served fast-h3 model (local or hosted)
                       │ frames / audio
                       ▼
                     Pacer ──▶ StreamSink (rtmp | noop)

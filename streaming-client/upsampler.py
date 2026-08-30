@@ -1,4 +1,4 @@
-"""Prompt upsampling: turn a viewer's rough idea into fasth3-ready scenes.
+"""Prompt upsampling: turn a viewer's rough idea into fast-h3-ready scenes.
 
 One LLM call per prompt, against any OpenAI-compatible endpoint. The model
 picks the shape the idea calls for — one scene of any legal length, or a
@@ -7,7 +7,7 @@ development, and payoff — writes each scene as a self-contained
 text-to-video prompt in the configured style/character, and picks each
 scene's length in seconds.
 
-Why the prompt is written the way it is — these rules come from how fasth3
+Why the prompt is written the way it is — these rules come from how fast-h3
 actually behaves, so keep them intact when editing:
 
   * **Every scene is an independent clip with no memory.** The single biggest
@@ -52,7 +52,7 @@ from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-# fasth3's enqueue cap (fasth3_types.MAX_PROMPT_CHARS). Hard limit, enforced
+# fast-h3's enqueue cap (fasth3_types.MAX_PROMPT_CHARS). Hard limit, enforced
 # server-side; _sanitize truncates to it.
 MAX_PROMPT_CHARS = 800
 # How many LLM calls one idea gets before the raw-prompt fallback. Each
@@ -154,7 +154,7 @@ HOW MANY SCENES, AND HOW LONG:
 
 @dataclass(frozen=True)
 class Scene:
-    """One upsampled scene: a prompt fasth3 can take verbatim, and a length."""
+    """One upsampled scene: a prompt fast-h3 can take verbatim, and a length."""
 
     prompt: str
     seconds: float
@@ -179,7 +179,7 @@ class SceneGroup:
 
 
 class PromptUpsampler:
-    """Expand chat ideas into styled, self-contained fasth3 scenes."""
+    """Expand chat ideas into styled, self-contained fast-h3 scenes."""
 
     def __init__(
         self,
@@ -355,7 +355,7 @@ class PromptUpsampler:
 
 
 def _sanitize(prompt: str) -> str:
-    """Collapse whitespace and fit under fasth3's prompt cap, ending clean.
+    """Collapse whitespace and fit under fast-h3's prompt cap, ending clean.
 
     LLMs overshoot the character target they are given, and a blind cut at
     the cap ends the prompt mid-word — worse for the model than losing the

@@ -1213,10 +1213,11 @@ def test_every_message_summary_says_when_it_is_emitted(schema):
 
 def test_no_message_name_repeats_the_model_name(schema):
     """The SDK client already identifies the model; a prefix is dead weight."""
+    forbidden = ("fasth3", "fast-h3", "fast_h3", "fasth-3")
     for name in schema["webhooks"]:
-        assert not name.startswith("fasth3"), name
+        assert not name.lower().startswith(forbidden), name
     for name in schema["components"]["schemas"]:
-        assert not name.lower().startswith("fasth3"), name
+        assert not name.lower().startswith(forbidden), name
 
 
 def test_every_command_summary_names_what_it_emits(schema):
@@ -1278,10 +1279,11 @@ def test_the_model_name_matches_the_folder(manifest):
     assert manifest["model"]["name"] == MODEL_DIR.name
 
 
-def test_the_version_is_semver_with_a_v_prefix(manifest):
+def test_the_version_is_bare_semver(manifest):
+    """The platform's release tag format: no `v` prefix, ever."""
     version = manifest["model"]["version"]
     assert isinstance(version, str), "quote the version so it is not parsed as a number"
-    assert re.fullmatch(r"v\d+\.\d+\.\d+", version), f"{version!r} must be semver with a `v`"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), f"{version!r} must be bare semver"
 
 
 def test_the_manifest_carries_a_complete_resource_spec(manifest):

@@ -1,16 +1,16 @@
 ---
-name: reactor-fasth3-model
-description: Full context for the fasth3 model in this repo — what FastH3/MiniMax-H3 is, how the Reactor Runtime serves it, the queue contract and every design decision behind it, the measured performance profile and its load-bearing tricks, and how to build and run it with the reactor CLI or raw docker. Read before changing anything under fasth3/, debugging generation speed or crashes, serving the model locally, or writing a client against it.
+name: reactor-fast-h3-model
+description: Full context for the fast-h3 model in this repo — what FastH3/MiniMax-H3 is, how the Reactor Runtime serves it, the queue contract and every design decision behind it, the measured performance profile and its load-bearing tricks, and how to build and run it with the reactor CLI or raw docker. Read before changing anything under fast-h3/, debugging generation speed or crashes, serving the model locally, or writing a client against it.
 ---
 
-# The fasth3 model: full working context
+# The fast-h3 model: full working context
 
-`fasth3/` turns the FastH3 video model into a **clip queue with a player**,
+`fast-h3/` turns the FastH3 video model into a **clip queue with a player**,
 served by the open-source [Reactor Runtime](https://github.com/reactor-team/reactor-runtime).
 Clients enqueue prompt-driven generations, the model builds them ahead of
 time, and nothing reaches the media tracks until asked (or autoplay is on).
 This file is the context a new agent needs; the per-file detail lives in
-[`fasth3/README.md`](../../fasth3/README.md) and the code's own docstrings.
+[`fast-h3/README.md`](../../fast-h3/README.md) and the code's own docstrings.
 
 ## 1. The underlying model
 
@@ -56,7 +56,7 @@ open-source authoring layer; docs at
 
 - **`ReactorModel` with its own `run()` loop, not `ReactorPipeline`.** The
   pipeline base is generator-driven — one `yield` per emitted chunk — which
-  suits frame-per-step models. fasth3's unit of work is a whole clip from
+  suits frame-per-step models. fast-h3's unit of work is a whole clip from
   one blocking call, so it subclasses `ReactorModel`: the runtime runs the
   model's `run()` concurrently with a command-dispatch loop and a lifecycle
   loop, so `@event` handlers (commands) answer immediately even mid-build or
@@ -68,7 +68,7 @@ open-source authoring layer; docs at
   while any client is attached; generation gates on it.
 - **Emission and pacing.** `await self.emit(Output(...))` hands frames to a
   per-connection pacer; a chunk is tagged with a playout rate — measured
-  (`compute_time=`) or the class's declared `fps`. fasth3 **pins `fps = 24`
+  (`compute_time=`) or the class's declared `fps`. fast-h3 **pins `fps = 24`
   and never passes `compute_time`**: a measured rate wobbles and drifts
   video against the sample-clocked audio. Emits go out in 3-frame slices
   (the runtime recorder's feed queue cannot absorb bursts), paced by frames
@@ -94,7 +94,7 @@ open-source authoring layer; docs at
 
 ## 3. The client contract (the two queues)
 
-Authoritative detail in [`fasth3/README.md`](../../fasth3/README.md) and
+Authoritative detail in [`fast-h3/README.md`](../../fast-h3/README.md) and
 `fasth3_types.py`; the shape in brief. A clip passes three stages: enqueued
 (**generation queue**), built (**playout queue**), consumed (played, or
 popped).
@@ -187,7 +187,7 @@ and removing any one of them regresses badly:
    arbitrary `seconds` values never pays the ~20 s first-build compile
    stall mid-session.
 4. **Dynamo's recompile limit is raised in every container interpreter** by
-   `fasth3/sitecustomize.py` (reached via `PYTHONPATH=/app` in
+   `fast-h3/sitecustomize.py` (reached via `PYTHONPATH=/app` in
    `runtime_env`; `FASTH3_DYNAMO_RECOMPILE_LIMIT`, default 64). The default
    limit of 8, combined with the fullgraph regional-compile route, was a
    hard crash of the engine workers once enough distinct lengths had been
@@ -223,7 +223,7 @@ weights root (`runtime.weights_path` in `reactor.yaml`;
 `checkpoint_dir: "."`). `load()` validates every component directory up
 front. Nothing downloads at load (`HF_HUB_OFFLINE=1`).
 
-**With the [reactor CLI](https://docs.reactor.inc/deploy)** (from `fasth3/`):
+**With the [reactor CLI](https://docs.reactor.inc/deploy)** (from `fast-h3/`):
 
 ```sh
 reactor build --no-dockerfile       # image from reactor.yaml's build: block
@@ -236,13 +236,13 @@ memory, and warm-up never exercises that path — docker's default 64 MB
 so for real serving use the documented docker equivalent:
 
 ```sh
-W=~/.cache/reactor_registry/fasth3
-docker run --rm -d --name fasth3 --shm-size=32g --gpus '"device=0,1,2,3"' \
+W=~/.cache/reactor_registry/fast-h3
+docker run --rm -d --name fast-h3 --shm-size=32g --gpus '"device=0,1,2,3"' \
   -p 8080:8080 -v "$W:$W" -e REACTOR_WEIGHTS_PATH="$W" -e PORT=8080 \
-  reactor-local/fasth3:dev run --port 8080
+  reactor-local/fast-h3:dev run --port 8080
 ```
 
-Load takes minutes (weights + warm-up builds; watch `docker logs -f fasth3`
+Load takes minutes (weights + warm-up builds; watch `docker logs -f fast-h3`
 for `session ready`). Pick GPUs with ~90 GB free each on the current
 profile. CPU-only checks need no GPU:
 
@@ -256,18 +256,18 @@ PYTHONPATH=. python -m pytest tests/ -q
 
 ```python
 from reactor_sdk import Reactor
-reactor = Reactor("fasth3", local=True)                                # :8080
-reactor = Reactor("fasth3", local=True, api_url="http://localhost:8082")  # custom port
+reactor = Reactor("fast-h3", local=True)                                # :8080
+reactor = Reactor("fast-h3", local=True, api_url="http://localhost:8082")  # custom port
 await reactor.connect()                       # second client: connect(session_id=...)
 ```
 
-`fasth3/client/client.py` is the reference walkthrough — it exercises the
+`fast-h3/client/client.py` is the reference walkthrough — it exercises the
 whole contract and writes received .mp4s, the message log, and a timing
 report; use it as the smoke test after any serving change.
 
 ## 6. Keeping this skill true
 
-This file is the context handoff between agents. When work on `fasth3/`
+This file is the context handoff between agents. When work on `fast-h3/`
 changes the contract, the profile, the serving mechanics, or resolves an
 open item, update this skill **in the same change** — a stale skill poisons
 the next session's assumptions. The same rule AGENTS.md applies to itself.

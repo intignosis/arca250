@@ -135,7 +135,7 @@ class FastH3(ReactorModel):
         # racing ahead of `@session_started` reads defaults, never garbage.
         self._reset_session_state()
         self.backend.load()
-        logger.info("fasth3 loaded", queue_capacity=self.config.queue_size)
+        logger.info("fast-h3 loaded", queue_capacity=self.config.queue_size)
 
     # -------------------------------------------------------- session state
 
@@ -790,7 +790,7 @@ class FastH3(ReactorModel):
                 else:
                     await asyncio.sleep(POLL_SECONDS)
             except Exception:  # noqa: BLE001 — the model loop must survive anything
-                logger.exception("error in the fasth3 serve loop")
+                logger.exception("error in the fast-h3 serve loop")
                 await asyncio.sleep(POLL_SECONDS)
 
     async def _pump_builds(self) -> None:

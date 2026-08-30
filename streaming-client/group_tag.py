@@ -1,4 +1,4 @@
-"""The metadata group tag: this client's format for fasth3 clip metadata.
+"""The metadata group tag: this client's format for fast-h3 clip metadata.
 
 The director writes it at enqueue time; the overlay and the director's own
 narration read it back off the metadata echo. It lives in its own module

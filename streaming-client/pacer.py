@@ -1,6 +1,6 @@
 """The pacer: turn clip-shaped model output into a constant-rate broadcast.
 
-fasth3's output is clips with black holds in between — frames arrive at a
+fast-h3's output is clips with black holds in between — frames arrive at a
 strict 24 fps *while a clip plays* and not at all while the queue idles or the
 Reactor connection is being rebuilt. An RTMP ingest (and any live sink) needs
 the opposite: a frame every period and audio every period, forever, or players

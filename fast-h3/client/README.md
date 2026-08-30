@@ -1,6 +1,6 @@
-# fasth3 queue client
+# fast-h3 queue client
 
-A reference client for the fasth3 clip queue, built on the Reactor Python SDK
+A reference client for the fast-h3 clip queue, built on the Reactor Python SDK
 (`reactor-sdk`). It walks the whole contract once — enqueue two prompts with
 metadata, watch `queue_update` report them ready, play the first clip to the
 end, confirm the stream holds on black, play the second by UUID, stop it

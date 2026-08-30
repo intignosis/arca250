@@ -18,7 +18,7 @@ way:
     ffmpeg's input buffer is full (encoder hiccup, network stall); blocking the
     asyncio loop starves WebRTC and snowballs. Each pipe gets its own writer
     thread behind a bounded queue; overflow drops the oldest entry.
-  * **Audio and video are separate pipes.** fasth3 produces real synchronized
+  * **Audio and video are separate pipes.** fast-h3 produces real synchronized
     audio, so silence-only `anullsrc` is not enough. Video goes on stdin,
     audio on an extra inherited pipe (`pipe:<fd>` + `pass_fds`). Feeding both
     every tick keeps ffmpeg's demuxers balanced; starving one while pushing

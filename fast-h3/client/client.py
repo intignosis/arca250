@@ -1,6 +1,6 @@
-"""Drive the fasth3 clip queue end to end with the Reactor Python SDK.
+"""Drive the fast-h3 clip queue end to end with the Reactor Python SDK.
 
-Connects to a served fasth3 model, exercises the whole queue contract —
+Connects to a served fast-h3 model, exercises the whole queue contract —
 enqueue with metadata, watching the queue turn ready, playing a clip to the
 end, the hold on black, playing a specific clip by UUID, and stopping one
 mid-play — and writes everything received to disk: one .mp4 per clip (video
@@ -148,7 +148,7 @@ def save_clip(out: Path, name: str, capture: ClipCapture) -> str:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="fasth3")
+    parser.add_argument("--model", default="fast-h3")
     parser.add_argument("--api-key", default=None, help="hosted session; default is local mode")
     parser.add_argument("--seconds", type=float, default=None, help="clip length to set")
     parser.add_argument("--out", default="./fasth3_out")

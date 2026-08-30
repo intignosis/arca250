@@ -1,9 +1,9 @@
-# fasth3 streaming client
+# fast-h3 streaming client
 
-A chat-driven livestream client for the fasth3 clip-queue model. It reads
+A chat-driven livestream client for the fast-h3 clip-queue model. It reads
 `!prompt` requests from Twitch and/or YouTube chat, moderates them, upsamples
 each one into a styled sequence of one or more video scenes with an LLM,
-enqueues those scenes on a served fasth3 model (local `reactor run` or hosted
+enqueues those scenes on a served fast-h3 model (local `reactor run` or hosted
 with an API key), and forwards the model's video+audio output as one
 uninterrupted broadcast to a pluggable **sink** — RTMP (Twitch / YouTube
 Live / Kick) today, a no-op sink for dry runs, and an interface designed for
@@ -25,7 +25,7 @@ YouTube API ┘      │   └───▶ PromptUpsampler (OpenAI-compatible LL
                    │              ▲
 idle_prompts.txt ──┘ (filler)     │
                    ▼  enqueue: scene groups, tagged via clip metadata
-              ReactorLink ◀──▶ fasth3 (clip queue; director sends play)
+              ReactorLink ◀──▶ fast-h3 (clip queue; director sends play)
                    │  24 fps video + 48 kHz audio (per clip, black between)
                    ▼
                  Pacer  ──── constant-rate clock: fills gaps with
@@ -51,7 +51,7 @@ idle_prompts.txt ──┘ (filler)     │
 
 ## The model side, in one paragraph
 
-fasth3 (see `../fasth3/fasth3_types.py`, the authoritative client-facing contract) is
+fast-h3 (see `../fast-h3/fasth3_types.py`, the authoritative client-facing contract) is
 **two queues**: `enqueue` takes a prompt (≤ 800 chars), an opaque `metadata`
 string (≤ 2000 chars, echoed back on every message that references the
 clip), and optionally `seconds` (snapped into 5.167–14.375 s), `seed`, and
@@ -114,7 +114,7 @@ echo, not client-side state that a reconnect can lose.
 `upsampler.py` calls one OpenAI-compatible endpoint (`OPENAI_BASE_URL` +
 `OPENAI_API_KEY`, so a proxy / vLLM / OpenRouter all work) with a system
 prompt that embeds your **style/character** (`STYLE` or `STYLE_FILE`). The
-prompt's rules mirror how fasth3 actually behaves — keep them intact when
+prompt's rules mirror how fast-h3 actually behaves — keep them intact when
 editing (rationale in the module docstring):
 
 - every scene is an independent clip with **no memory**, so every scene
@@ -287,7 +287,7 @@ contract, not a bug.
 ## Learnings baked into this client (do not re-learn these)
 
 From the earlier RTMP clients (py-sdk `rtmp_app` / `story_livestream_app`,
-which took many iterations to stabilize) and from driving the fasth3 queue:
+which took many iterations to stabilize) and from driving the fast-h3 queue:
 
 - **Raw-video geometry is unforgiving.** One frame whose bytes disagree with
   ffmpeg's `-s WxH` (wrong size, or non-C-contiguous `tobytes()` including
@@ -297,7 +297,7 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
 - **Never write to a pipe from the event loop.** `stdin.write` blocks when
   ffmpeg stalls; a blocked loop starves WebRTC and everything snowballs. Each
   ffmpeg pipe has its own writer thread behind a bounded drop-oldest queue.
-- **Feed audio and video in lockstep, on separate pipes.** fasth3 has real
+- **Feed audio and video in lockstep, on separate pipes.** fast-h3 has real
   synchronized audio (`anullsrc` silence is not enough), and starving one
   ffmpeg input while pushing the other is the classic two-pipe deadlock. The
   pacer delivers both every tick.
@@ -308,13 +308,13 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
 - **The sink outlives Reactor reconnects.** Sink + pacer are created once and
   the connection loop runs behind them, so the platform sees one continuous
   stream while the client rebuilds a session.
-- **A constant-rate pacer is not optional for this model.** fasth3's output is
+- **A constant-rate pacer is not optional for this model.** fast-h3's output is
   clip-shaped: 24 fps while a clip plays, *nothing* while the queue idles.
   RTMP needs a frame every period forever. The pacer (FIFO-buffered video and
   audio with the same shallow cap, repeats + silence on underflow, drop-oldest
   on overflow) is what converts one into the other — and buffering both media
   types symmetrically is what keeps A/V sync.
-- **The queue dies with the session.** fasth3 resets all session state on a
+- **The queue dies with the session.** fast-h3 resets all session state on a
   new session: after a reconnect, clips that were queued but unplayed are
   gone. Chat prompts still waiting in the director survive (they live
   client-side); a group lost mid-flight is lost. Re-enqueueing on reconnect
@@ -343,7 +343,7 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
   budget; every capacity read from `state_update`; pacer/sink never torn
   down on reconnect; sinks never block the event loop; overlays never
   mutate the pacer's frame and stay within a few ms per compose.
-- `../fasth3/fasth3_types.py` is the wire contract. If the model's schema moves
+- `../fast-h3/fasth3_types.py` is the wire contract. If the model's schema moves
   (new fields, renamed messages), update `reactor_link.py`'s mirror and the
   director's message handling together, and re-check this README's model
   paragraph.
@@ -353,4 +353,4 @@ which took many iterations to stabilize) and from driving the fasth3 queue:
   the contract, this README only summarizes them.
 - There are no tests here yet; the cheap smoke test is
   `python main.py --local --sink noop` against a local `reactor run` (or the
-  reference `../fasth3/client/client.py` for the raw queue contract).
+  reference `../fast-h3/client/client.py` for the raw queue contract).

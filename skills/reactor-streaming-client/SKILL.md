@@ -1,24 +1,24 @@
 ---
 name: reactor-streaming-client
-description: Full context for the streaming client in this repo — the philosophy that splits it from the fasth3 model, the chat→moderation→upsampling→two-queue→playout pipeline, every load-bearing scheduling policy (viewer priority, FIFO, drops, backpressure), the media path (pacer, sinks, overlay), and how to run and verify it. Read before changing anything under streaming-client/, debugging the broadcast, adding a sink or chat platform, or tuning the prompt/scheduling behaviour.
+description: Full context for the streaming client in this repo — the philosophy that splits it from the fast-h3 model, the chat→moderation→upsampling→two-queue→playout pipeline, every load-bearing scheduling policy (viewer priority, FIFO, drops, backpressure), the media path (pacer, sinks, overlay), and how to run and verify it. Read before changing anything under streaming-client/, debugging the broadcast, adding a sink or chat platform, or tuning the prompt/scheduling behaviour.
 ---
 
 # The streaming client: full working context
 
-`streaming-client/` turns a served fasth3 model into an **unattended,
+`streaming-client/` turns a served fast-h3 model into an **unattended,
 chat-programmed, never-ending broadcast**: viewers type `!prompt <idea>` in
 Twitch or YouTube chat, an LLM stages each idea into scenes, the model
 renders them, and the output streams to an RTMP ingest with a live status
 overlay. This file is the context a new agent needs; per-module detail lives
 in [`streaming-client/README.md`](../../streaming-client/README.md) and the
 code's own docstrings, and the model's side of the story in the
-`reactor-fasth3-model` skill.
+`reactor-fast-h3-model` skill.
 
 ## 1. The philosophy: the model renders, the client decides
 
 The one design rule everything else hangs off:
 
-- **fasth3 is a renderer with two queues and zero policy.** It builds the
+- **fast-h3 is a renderer with two queues and zero policy.** It builds the
   generation queue front-first (always, on its own), parks built clips in
   the playout queue, and plays exactly what it is told. It never knows who
   asked for a clip or why one outranks another.
@@ -59,7 +59,7 @@ YouTube API ┘      │            (LLM, fail-closed)            chat only)
 | `reactor_link.py` | Everything `reactor_sdk`: connect/reconnect loop, both queue mirrors + `state_update` mirror, command sending, message fan-out, media → pacer, local orphan clearing. |
 | `director.py` | All scheduling: intake (cooldown, budget drop), moderate → upsample → positional enqueue; `run_playout` (the only sender of `play`); `run_idle` (filler); backpressure relief. |
 | `group_tag.py` | The metadata tag format + the shared policies: `pick_next` (play order), `viewer_insert_position` (build order), `is_generated`. |
-| `upsampler.py` | The LLM call, the system prompt (distilled from fasth3's official paper prompts), scene validation, retries. |
+| `upsampler.py` | The LLM call, the system prompt (distilled from fast-h3's official paper prompts), scene validation, retries. |
 | `moderator.py` | OpenAI moderations on its own endpoint; fail-closed. |
 | `pacer.py` | The 24 fps metronome between clip-shaped model output and the sink. |
 | `overlay/` | Per-frame status drawing; contract in `base.py`, shipped overlay in `status.py`. |
@@ -128,7 +128,7 @@ client changing:
 
 ## 4. The media path
 
-- **The pacer is not optional.** fasth3 emits 24 fps *while a clip plays*
+- **The pacer is not optional.** fast-h3 emits 24 fps *while a clip plays*
   and nothing between clips; a live sink needs a frame and audio every
   period forever. The pacer buffers video and audio symmetrically (that
   symmetry is A/V sync), fills gaps with repeated frames + silence, and —
@@ -151,7 +151,7 @@ client changing:
 - **Upsampler** (`upsampler.py`): one OpenAI-compatible call per idea
   (`OPENAI_BASE_URL` — a corp gateway works). The system prompt embeds the
   configured `STYLE` (an original cartoon-sitcom world with a crossover
-  cast) and is **distilled from fasth3's official paper prompts**: `[Shot N]`
+  cast) and is **distilled from fast-h3's official paper prompts**: `[Shot N]`
   segments with cut timestamps, `S1`/`S2` character tags, a camera sentence
   with amplitude and speed, dialogue inside `<d>[Language] ...</d>` with the
   voice described, explicit constraint assertions, closing soundscape. Keep
@@ -210,7 +210,7 @@ python main.py                       # everything from .env
 ## 8. Keeping this skill true
 
 This file is the context handoff between agents, the same way
-`reactor-fasth3-model` is for the model. When work under `streaming-client/`
+`reactor-fast-h3-model` is for the model. When work under `streaming-client/`
 changes the pipeline, a policy in section 3, a contract in the `base.py`
 files, or the run/verify story, update this skill **in the same change** —
 a stale skill poisons the next session's assumptions.

@@ -105,7 +105,7 @@ class FastH3Backend:
         runtime = self._config.runtime
         num_gpus = int(runtime.get("num_gpus", 8))
         logger.info(
-            "building fasth3 generator",
+            "building fast-h3 generator",
             model_path=str(self._model_path),
             num_gpus=num_gpus,
             clip_frames=self._config.clip_frames,
@@ -117,12 +117,12 @@ class FastH3Backend:
         self._load_tokenizer()
 
         self._worker = threading.Thread(
-            target=self._worker_loop, name="fasth3-generation", daemon=True
+            target=self._worker_loop, name="fast-h3-generation", daemon=True
         )
         self._worker.start()
         self._preload_native_imports()
         self._run_blocking(self._warmup)
-        logger.info("fasth3 backend loaded")
+        logger.info("fast-h3 backend loaded")
 
     def _load_tokenizer(self) -> None:
         """Load the bundle's tokenizer and calibrate the one-token pad filler.
@@ -250,7 +250,7 @@ class FastH3Backend:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-        logger.info("fasth3 profile", **{k: (v or "<unset>") for k, v in environment.items()})
+        logger.info("fast-h3 profile", **{k: (v or "<unset>") for k, v in environment.items()})
 
     def _validate_profile_dependencies(self) -> None:
         """Fail before the 148 GB load when the selected fast route is absent."""

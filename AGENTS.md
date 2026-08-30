@@ -10,13 +10,13 @@
 > symlink to this file; never let them diverge into two copies.
 
 This repo is a complete, working system: a chat-driven infinite AI video
-broadcast. `fasth3/` is the model — a queue of prompt-driven clip
+broadcast. `fast-h3/` is the model — a queue of prompt-driven clip
 generations, served by the [Reactor Runtime](https://github.com/reactor-team/reactor-runtime)
 as a `reactor` CLI workspace. `streaming-client/` is the client — it reads
 `!prompt` ideas from Twitch/YouTube chat, upsamples them into styled scene
 sequences with an LLM, feeds the model's queue over `reactor-sdk`, and pushes
 the output to an RTMP ingest as one uninterrupted stream. They meet only on
-the wire; `fasth3/fasth3_types.py` is that contract.
+the wire; `fast-h3/fasth3_types.py` is that contract.
 
 **Contribution policy:** never commit, push, or open PRs without explicit
 permission from a human maintainer in the current conversation. Commits are
@@ -45,7 +45,7 @@ The client is a straight pipeline:
 ```
 chat (Twitch IRC / YouTube API) → Director → Moderator → PromptUpsampler (LLM)
   idle_prompts.txt (filler) ────↗
-       → ReactorLink (enqueue + play) → fasth3
+       → ReactorLink (enqueue + play) → fast-h3
        → Pacer (constant-rate clock) → StreamSink (rtmp | noop | yours)
 ```
 
@@ -97,7 +97,7 @@ scene title/author, coming up — all reconstructed from the metadata echo).
    the live bounds** from `state_update` — never trust the LLM's counting,
    never hardcode bounds the deployment publishes.
 5. **The schema is product surface.** Every `@event`/`InputField`/
-   `MessageField` description and `ModelMessage` docstring in `fasth3/` is
+   `MessageField` description and `ModelMessage` docstring in `fast-h3/` is
    compiled into the published schema. Describe only what a client can
    observe on the wire (commands, messages, tracks, by wire name in
    backticks) — never internals (kernels, caches, config keys, GPU counts).
@@ -106,8 +106,8 @@ scene title/author, coming up — all reconstructed from the metadata echo).
 
 | You are changing… | Edit | Then also |
 | --- | --- | --- |
-| Model behaviour (queue, playout, engine) | `fasth3/fasth3*.py` along the file seams below | tests; bump `model.version` if the surface moved |
-| The wire contract (commands, messages, fields) | `fasth3/fasth3_types.py` + the handler | `streaming-client/reactor_link.py` + `director.py` mirror it; both READMEs; version bump sized to schema impact |
+| Model behaviour (queue, playout, engine) | `fast-h3/fast-h3*.py` along the file seams below | tests; bump `model.version` if the surface moved |
+| The wire contract (commands, messages, fields) | `fast-h3/fasth3_types.py` + the handler | `streaming-client/reactor_link.py` + `director.py` mirror it; both READMEs; version bump sized to schema impact |
 | Stream delivery (encoding, destinations) | `streaming-client/sinks/` | register in `make_sink`, `.env.example`, README sink table |
 | Prompt sources | `streaming-client/chat/` | `build_chat_sources` in `main.py`, `.env.example`, README |
 | Upsampling behaviour / the style prompt | `streaming-client/upsampler.py` | keep the constraint rules intact — the rationale is in the module docstring |
@@ -115,10 +115,10 @@ scene title/author, coming up — all reconstructed from the metadata echo).
 | Idle filler / eviction | `streaming-client/director.py` (`run_idle`, `_evict_fillers`) + `idle_prompts.txt` | README's Idle filler section |
 | What the broadcast shows on top of the video | `streaming-client/overlay/` (contract in `base.py`; shipped overlay in `status.py`) | README's Overlay section; keep compose non-mutating and per-frame cheap |
 
-## Model rules (`fasth3/`) — distilled from the Reactor cookbook
+## Model rules (`fast-h3/`) — distilled from the Reactor cookbook
 
 - **Start from the skill:**
-  [`skills/reactor-fasth3-model/SKILL.md`](./skills/reactor-fasth3-model/SKILL.md)
+  [`skills/reactor-fast-h3-model/SKILL.md`](./skills/reactor-fast-h3-model/SKILL.md)
   is the full context handoff — what FastH3/MiniMax-H3 is, how the Reactor
   Runtime serves it, the queue contract and the decisions behind it, the
   measured 1.0x-realtime profile and its load-bearing pieces (source-built
@@ -128,9 +128,9 @@ scene title/author, coming up — all reconstructed from the metadata echo).
   and run with the reactor CLI or raw docker. **Maintain it in the same
   change whenever model work moves any of that** — contract, profile,
   serving mechanics, or an open item closing — exactly as this file demands
-  of itself. [`fasth3/README.md`](./fasth3/README.md) stays the per-file
+  of itself. [`fast-h3/README.md`](./fast-h3/README.md) stays the per-file
   detail and Deployment learnings record.
-- **fasth3 deliberately subclasses `ReactorModel` with its own `run()` loop**
+- **fast-h3 deliberately subclasses `ReactorModel` with its own `run()` loop**
   (not `ReactorPipeline`): its unit of work is a whole clip, and command
   handlers must answer while a clip builds or plays. Do not "normalize" this.
 - **File seams are fixed.** `fasth3.py` owns commands + the playout loop;
@@ -148,7 +148,7 @@ scene title/author, coming up — all reconstructed from the metadata echo).
   metadata) sets `moderate=True`. Enum/bounded fields never do.
 - **No ghost surface.** No undecorated command-shaped methods, no message
   classes nothing sends, no write-only attributes. Git history is the archive.
-- **Manifest.** `fasth3/reactor.yaml` orders `model:`, `runtime:`, `build:`;
+- **Manifest.** `fast-h3/reactor.yaml` orders `model:`, `runtime:`, `build:`;
   `model.version` is `v`-prefixed semver bumped with every shipped change,
   sized to the schema impact; `build.runtime_version` pins the Reactor
   Runtime release. Weights never live in git. CUDA 13 and the source-built
@@ -180,8 +180,8 @@ the same change as the code it describes:
 | `AGENTS.md` (this file; `CLAUDE.md` symlinks here) | System picture, load-bearing invariants, change routing, verification | any invariant, component, or workflow moves |
 | `streaming-client/README.md` | Client architecture, the ffmpeg/RTMP learnings, moderation & idle-filler behaviour, run instructions | client behaviour it describes moves |
 | `streaming-client/{sinks,chat,overlay}/base.py` docstrings | The sink, chat-source, and overlay interface contracts | the contract itself changes (READMEs only summarize these) |
-| `skills/*/SKILL.md` | Deep context handoffs: `reactor-fasth3-model` (the model, its profile, serving), `reactor-streaming-client` (the client's pipeline and policies) | anything they narrate moves — same change, per their own closing sections |
-| `streaming-client/.env.example` + `fasth3/README.md` | Every knob, with its default; the model's own story | a knob or model surface is added/renamed |
+| `skills/*/SKILL.md` | Deep context handoffs: `reactor-fast-h3-model` (the model, its profile, serving), `reactor-streaming-client` (the client's pipeline and policies) | anything they narrate moves — same change, per their own closing sections |
+| `streaming-client/.env.example` + `fast-h3/README.md` | Every knob, with its default; the model's own story | a knob or model surface is added/renamed |
 
 A PR that changes behaviour without touching the document that describes it
 is incomplete — flag it in review, and as an agent, fix it before finishing
@@ -192,7 +192,7 @@ truth; correct the document in the same change and say so.
 
 ```sh
 # Model: the contract renders, and only the intended surface moved.
-cd fasth3
+cd fast-h3
 python -m reactor_runtime.schema --path . --out /tmp/schema.json   # diff before/after
 PYTHONPATH=. python -m pytest tests/ -q
 
@@ -202,5 +202,5 @@ python -m py_compile main.py config.py pacer.py reactor_link.py director.py upsa
 python main.py --local --sink noop        # against a local `reactor run`
 
 # Raw queue contract smoke test (writes .mp4s + timing report):
-python fasth3/client/client.py            # or --api-key rk_... for hosted
+python fast-h3/client/client.py            # or --api-key rk_... for hosted
 ```

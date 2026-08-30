@@ -26,7 +26,7 @@ fastvideo==0.2.1
 fastvideo-kernel @ git+https://github.com/hao-ai-lab/FastVideo.git@1aed66737739e1fd6ea7271d3306a615a2a6bd55#subdirectory=fastvideo-kernel
 
 # FA4 CuTe kernels for the dense (text and audio) attention paths. Pinned to
-# the revision FastVideo's own `fasth3` extra selects: it fixes
+# the revision FastVideo's own `fast-h3` extra selects: it fixes
 # nvidia-cutlass-dsl at 4.6.0.dev0, and an older cutlass-dsl breaks these
 # kernels at JIT time rather than at import.
 flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@14c377950125c70b7a9dabf9c561fca53715ac7d#subdirectory=flash_attn/cute

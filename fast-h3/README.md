@@ -44,7 +44,7 @@ conditioning are not.
 One Hugging Face snapshot carries every component:
 
 ```
-~/.cache/reactor_registry/fasth3/
+~/.cache/reactor_registry/fast-h3/
 └── FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree/   # ~148 GB
     ├── modular_model_index.json
     ├── transformer/        # ~70 GB, the 35B DiT
@@ -417,7 +417,7 @@ separate cost, covered by `inference.warmup_lengths` below.
   streams. Sessions are multi-connection: broadcasts and media fan out to
   every connection, command replies go to the caller only.
 - **The SDK's local mode honours a custom port** via
-  `Reactor("fasth3", local=True, api_url="http://localhost:<port>")` — only
+  `Reactor("fast-h3", local=True, api_url="http://localhost:<port>")` — only
   the default URL is rewritten to 8080.
 - **Audio is deliberately mono int16 at 48 kHz**: the transport downmixes
   anyway and the runtime recorder corrupts stereo by concatenation, so the

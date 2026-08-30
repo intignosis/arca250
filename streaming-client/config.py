@@ -1,4 +1,4 @@
-"""Configuration for the fasth3 streaming client.
+"""Configuration for the fast-h3 streaming client.
 
 Everything comes from the environment (a `.env` file is loaded when present),
 with a handful of CLI overrides for the things you flip per run. `Config.load`
@@ -81,7 +81,7 @@ class Config:
     def load(argv: list[str] | None = None) -> "Config":
         """Read `.env` + environment, apply CLI overrides, and validate."""
         parser = argparse.ArgumentParser(
-            description="Chat-driven fasth3 livestream client (see README.md)."
+            description="Chat-driven fast-h3 livestream client (see README.md)."
         )
         parser.add_argument("--env-file", default=None, help="path to a .env file")
         parser.add_argument("--model", default=None, help="override REACTOR_MODEL")
@@ -119,7 +119,7 @@ class Config:
             idle_prompts = _load_prompt_lines(default_file, required=False)
 
         config = Config(
-            model=args.model or os.environ.get("REACTOR_MODEL", "fasth3"),
+            model=args.model or os.environ.get("REACTOR_MODEL", "fast-h3"),
             api_key=args.api_key or os.environ.get("REACTOR_API_KEY") or None,
             local=args.local or _flag(os.environ.get("REACTOR_LOCAL")),
             local_url=args.local_url

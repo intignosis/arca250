@@ -2,7 +2,7 @@
 
 One prompt from chat becomes one *scene group*: the upsampler expands it into
 1..N self-contained scenes — a single shot, or a chunked short story — and
-the director enqueues them contiguously on the fasth3 queue. The director is
+the director enqueues them contiguously on the fast-h3 queue. The director is
 also the *playout* brain: autoplay stays off, and `run_playout` sends an
 explicit `play` for the next clip whenever the stream idles — viewer content
 before filler, judged purely from the metadata echo (`pick_next` in
@@ -25,7 +25,7 @@ model deliberately never has. Rules that keep it coherent:
     viewer work is pending.
 
 Every scene carries the group's identity in the clip's `metadata` — an opaque
-string fasth3 stores and echoes back on every message that references the
+string fast-h3 stores and echoes back on every message that references the
 clip. That is what lets this client (or any overlay built on it) reconstruct
 "scene 2/3 of *Neon Alley* by viewer_42" from a `clip_started` alone, without
 joining ids against local state that a reconnect may have lost. The same tag
@@ -73,7 +73,7 @@ _PLAYOUT_POLL_S = 0.5
 
 
 class Director:
-    """Consume chat prompts; keep the fasth3 queue fed with scene groups."""
+    """Consume chat prompts; keep the fast-h3 queue fed with scene groups."""
 
     def __init__(
         self,
@@ -330,7 +330,7 @@ class Director:
                         "author": group.author,
                         "source": group.source,
                         "generated": group.generated,
-                        # Truncated so the whole blob stays well under fasth3's
+                        # Truncated so the whole blob stays well under fast-h3's
                         # 2000-char metadata cap.
                         "raw_prompt": group.raw_prompt[:400],
                     },

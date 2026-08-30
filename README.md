@@ -2,7 +2,7 @@
 
 An end-to-end, chat-driven, never-ending AI video broadcast. Viewers type
 `!prompt <idea>` in Twitch or YouTube chat; an LLM expands each idea into a
-styled sequence of scenes; the fasth3 model generates them as 768p video
+styled sequence of scenes; the fast-h3 model generates them as 768p video
 clips with synchronized audio; and the stream goes out over RTMP as one
 uninterrupted broadcast.
 
@@ -10,16 +10,16 @@ Two halves, one contract:
 
 | Folder | What it is | Runs on |
 | --- | --- | --- |
-| [`fasth3/`](./fasth3) | The model: a queue of prompt-driven clip generations with explicit/auto playback. A `reactor` CLI workspace. | [Reactor Runtime](https://github.com/reactor-team/reactor-runtime), 4x B200 |
+| [`fast-h3/`](./fast-h3) | The model: a queue of prompt-driven clip generations with explicit/auto playback. A `reactor` CLI workspace. | [Reactor Runtime](https://github.com/reactor-team/reactor-runtime), 4x B200 |
 | [`streaming-client/`](./streaming-client) | The client: chat → prompt upsampling → scene groups → the model's queue → paced RTMP output. | `reactor-sdk` (Python), any box with ffmpeg |
 
-They meet on the wire: `fasth3/fasth3_types.py` is the client-facing
+They meet on the wire: `fast-h3/fasth3_types.py` is the client-facing
 contract (commands, messages, tracks), and the streaming client speaks
 exactly that.
 
 ## Quickstart
 
-Serve the model (locally with `reactor run` from `fasth3/`, or deploy it),
+Serve the model (locally with `reactor run` from `fast-h3/`, or deploy it),
 then:
 
 ```sh

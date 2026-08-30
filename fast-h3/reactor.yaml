@@ -2,8 +2,10 @@
 $schema: reactor/v1
 
 model:
-  name: fasth3
-  version: v0.5.0
+  name: fast-h3
+  # Bare semver, no `v` prefix — the platform's release tag format; the
+  # registration validator refuses a prefixed one.
+  version: 0.5.0
   description: |
     Generate 768p video clips with synchronized audio from a queue of prompts.
     MiniMax-H3 (35B), distilled by FastVideo to four transformer forwards with
@@ -42,7 +44,7 @@ runtime:
   import: fasth3:FastH3
   config: fasth3.yaml
   # The weights bundle lives here; nothing is downloaded at load.
-  weights_path: ~/.cache/reactor_registry/fasth3
+  weights_path: ~/.cache/reactor_registry/fast-h3
   # Left off deliberately. Every clip is generated independently and the stream
   # holds on black between plays, so a recording carries hard cuts in picture
   # and sound at each boundary; enable it once that seam has been looked at.

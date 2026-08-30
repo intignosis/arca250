@@ -1,4 +1,4 @@
-"""The Reactor side: one supervised connection to a served fasth3 model.
+"""The Reactor side: one supervised connection to a served fast-h3 model.
 
 `ReactorLink` owns everything that touches `reactor_sdk`:
 
@@ -11,7 +11,7 @@
     instead of re-deriving it;
   * a fan-out of every model message to registered listeners.
 
-The model contract this speaks is the fasth3 clip queue (`../fasth3/fasth3_types.py`
+The model contract this speaks is the fast-h3 clip queue (`../fast-h3/fasth3_types.py`
 is the authoritative reference): `enqueue` → `clip_queued`, readiness on
 `queue_update`, explicit `play` per clip, black between clips. Autoplay stays
 off: the director drives playout, choosing each next clip from the metadata
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 RECONNECT_DELAY_S = 5.0
 
-# fasth3's fixed output timing (fasth3_clip_plan.FPS / backend sample rate).
+# fast-h3's fixed output timing (fasth3_clip_plan.FPS / backend sample rate).
 # The canvas (width/height) is read from state_update instead — it depends on
 # the deployment's aspect — but the rates are pinned by the checkpoint.
 MODEL_FPS = 24
@@ -61,7 +61,7 @@ def payload(reply: Any) -> Any:
 
 
 class ReactorLink:
-    """Supervised fasth3 session: media into the pacer, commands out."""
+    """Supervised fast-h3 session: media into the pacer, commands out."""
 
     def __init__(self, config: Config) -> None:
         self._config = config
