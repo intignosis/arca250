@@ -23,7 +23,7 @@ Twitch IRC ─┐
             ├─▶ Director ──▶ Moderator (OpenAI moderations API)
 YouTube API ┘      │   └───▶ PromptUpsampler (OpenAI-compatible LLM)
                    │              ▲
-idle_prompts.txt ──┘ (filler)     │
+presets/<n>.json ──┘ (filler)     │
                    ▼  enqueue: scene groups, tagged via clip metadata
               ReactorLink ◀──▶ fast-h3 (clip queue; director sends play)
                    │  24 fps video + 48 kHz audio (per clip, black between)
@@ -43,7 +43,7 @@ idle_prompts.txt ──┘ (filler)     │
 | `director.py` | Chat prompt → moderate → upsample → enqueue scene groups; idle filler + eviction; per-author cooldown; now-playing narration from metadata. |
 | `upsampler.py` | The LLM call and the system prompt; scene validation (char cap, length clamp, chunk-count cap). |
 | `moderator.py` | The moderations call and the fail-closed policy. |
-| `idle_prompts.txt` | The curated filler prompts, one per line. |
+| `presets/` | Creative presets: one JSON per stream identity — the style block plus the premade idle prompts. `default.json` ships; other presets stay untracked. |
 | `pacer.py` | The 24 fps metronome between bursty/clip-shaped model output and the sink's need for a frame + audio every period, forever. Hands each outgoing frame to the overlay. |
 | `overlay/` | The per-frame decoration interface (`base.py`) and the shipped status overlay (`status.py`). |
 | `sinks/` | The output interface (`base.py`), ffmpeg RTMP (`rtmp.py`), no-op (`noop.py`), factory (`__init__.py`). |
@@ -113,7 +113,8 @@ echo, not client-side state that a reconnect can lose.
 
 `upsampler.py` calls one OpenAI-compatible endpoint (`OPENAI_BASE_URL` +
 `OPENAI_API_KEY`, so a proxy / vLLM / OpenRouter all work) with a system
-prompt that embeds your **style/character** (`STYLE` or `STYLE_FILE`). The
+prompt that embeds the **preset's style/character** (`PRESET` names a
+JSON bundle in `presets/`; format in `config.py`'s `_load_preset`). The
 prompt's rules mirror how fast-h3 actually behaves — keep them intact when
 editing (rationale in the module docstring):
 
@@ -164,8 +165,8 @@ The idle list is curated in this repo and skips the check.
 
 When chat is quiet, the director's `run_idle` task keeps the model's queues
 (generation + playout together) topped up to `IDLE_QUEUE_TARGET` clips
-(default 6) from `idle_prompts.txt` (shuffled, then rotated; override with
-`IDLE_PROMPTS_FILE`). The target **self-clamps to one below the deployment's
+(default 6) from the preset's `idle_prompts` list (shuffled, then
+rotated). The target **self-clamps to one below the deployment's
 live playout capacity**: filler must never fill the playout queue to the
 brim, because a full playout queue pauses builds, and the headroom slot is
 where the next viewer clip lands. Filler prompts run through the same

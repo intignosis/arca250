@@ -39,7 +39,7 @@ if a change needs the model to know one, the design is wrong.
 ## 2. The pipeline
 
 ```
-Twitch IRC ─┐                                       idle_prompts.txt
+Twitch IRC ─┐                                       presets/<n>.json
             ├─▶ Director ─▶ Moderator ─▶ PromptUpsampler ◀── (filler, quiet
 YouTube API ┘      │            (LLM, fail-closed)            chat only)
                    ▼ enqueue(position) / play / pop — scene groups tagged in metadata
@@ -150,8 +150,11 @@ client changing:
 
 - **Upsampler** (`upsampler.py`): one OpenAI-compatible call per idea
   (`OPENAI_BASE_URL` — a corp gateway works). The system prompt embeds the
-  configured `STYLE` (an original cartoon-sitcom world with a crossover
-  cast) and is **distilled from fast-h3's official paper prompts**: `[Shot N]`
+  preset's style (`presets/<name>.json`, selected by `PRESET` — one JSON
+  bundle per stream identity carrying the style block and the premade idle
+  prompts; the shipped `default.json` is an original cartoon-sitcom world
+  with a crossover cast, and non-default presets stay untracked) and is
+  **distilled from fast-h3's official paper prompts**: `[Shot N]`
   segments with cut timestamps, `S1`/`S2` character tags, a camera sentence
   with amplitude and speed, dialogue inside `<d>[Language] ...</d>` with the
   voice described, explicit constraint assertions, closing soundscape. Keep

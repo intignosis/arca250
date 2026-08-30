@@ -44,7 +44,7 @@ The client is a straight pipeline:
 
 ```
 chat (Twitch IRC / YouTube API) → Director → Moderator → PromptUpsampler (LLM)
-  idle_prompts.txt (filler) ────↗
+  presets/<n>.json (filler) ───↗
        → ReactorLink (enqueue + play) → fast-h3
        → Pacer (constant-rate clock) → StreamSink (rtmp | noop | yours)
 ```
@@ -112,7 +112,8 @@ scene title/author, coming up — all reconstructed from the metadata echo).
 | Prompt sources | `streaming-client/chat/` | `build_chat_sources` in `main.py`, `.env.example`, README |
 | Upsampling behaviour / the style prompt | `streaming-client/upsampler.py` | keep the constraint rules intact — the rationale is in the module docstring |
 | Moderation policy | `streaming-client/moderator.py` | keep it fail-closed; README's Moderation section |
-| Idle filler / eviction | `streaming-client/director.py` (`run_idle`, `_evict_fillers`) + `idle_prompts.txt` | README's Idle filler section |
+| Idle filler / eviction | `streaming-client/director.py` (`run_idle`, `_evict_fillers`) | README's Idle filler section |
+| A stream's creative identity (style + premade prompts) | `streaming-client/presets/<name>.json` (format in `config.py`'s `_load_preset`; only `default.json` is tracked) | README's Idle filler + Prompt upsampling sections |
 | What the broadcast shows on top of the video | `streaming-client/overlay/` (contract in `base.py`; shipped overlay in `status.py`) | README's Overlay section; keep compose non-mutating and per-frame cheap |
 
 ## Model rules (`fast-h3/`) — distilled from the Reactor cookbook

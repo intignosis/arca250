@@ -146,9 +146,11 @@ async def main() -> None:
         link.attach_pacer(pacer)
         tasks.append(asyncio.create_task(pacer.run(), name="pacer"))
         logger.info(
-            "streaming %dx%d@%dfps to sink=%s (overlay %s) — chat command %r on %s",
+            "streaming %dx%d@%dfps to sink=%s (overlay %s, preset %r) — "
+            "chat command %r on %s",
             width, height, MODEL_FPS, config.sink,
             "on" if overlay else "off",
+            config.preset_name,
             config.chat_command,
             ", ".join(s.name for s in chat_sources) or "nothing",
         )

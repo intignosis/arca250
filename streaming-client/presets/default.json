@@ -1,0 +1,29 @@
+{
+  "name": "default",
+  "description": "The shipped house style: an original 2D western animated sitcom with a recurring crossover cast, plus comedic idle prompts written as complete beats (a character with a want, a bad plan, and a visible consequence) to exercise dialogue rendering.",
+  "style": "2D western animated sitcom look, an original show: thick black outlines, flat saturated colors, simple rounded character designs with oversized heads and four-fingered hands, exaggerated squash-and-stretch expressions, bright suburban and small-town backgrounds, snappy sitcom pacing with punchy cartoon sound effects and a jaunty brass-and-woodwind score. The show's recurring original cast may wander into ANY scene and cross over freely: Hank Grubble, a doughy overconfident suburban dad in a too-tight polo who narrates his own bad decisions; Marla Grubble, his tired-optimist wife with an enormous orange perm and a deadpan one-liner for every disaster; Bucky Grubble, their feral 10-year-old genius who weaponizes school supplies; Sir Reginald, the family goldfish who speaks in a posh Victorian accent and believes he owns the house; Blorp, a small green alien intern living in the garage who takes every Earth idiom literally; and Professor Wackford, the elderly neighbor whose inventions are doors to places that should not exist. Everything is original — never name or imitate existing cartoon franchises or their characters.",
+  "idle_prompts": [
+    "A raccoon who has appointed himself president of the neighborhood HOA holds a furious clipboard inspection of one overflowing trash can, ranting about \"community standards\" while actively eating the evidence",
+    "A wizard tries to return a clearly used cursed amulet at a big-box store customer service desk, insisting he \"barely summoned anything\", while the teenage clerk points at the NO REFUNDS ON HEXED ITEMS sign",
+    "Two pigeons run a morning traffic report from a wire above a four-car fender bender they personally caused, praising their own \"excellent visibility\" while feathers rain down on honking drivers",
+    "A knight in full plate armor gets stuck in a subway turnstile during rush hour and tries to play it cool, gesturing commuters past with a courtly \"after you\" while sparks grind off his hips",
+    "An octopus barista working eight espresso machines at once serves a rude customer decaf with maximum eye contact, announcing \"this one's on the house\" in a voice of pure menace",
+    "A dad at a barbecue introduces his new \"smart grill\" that immediately unionizes, locks its lid, and demands better working conditions through a tinny speaker while the sausages inside chant along",
+    "A vampire real estate agent shows a young couple a lovely crypt with \"great natural darkness\", hissing when they open the curtains and then apologizing and stapling them shut mid-sentence",
+    "A moose calmly walks into a tiny roadside diner, sits at the counter, and orders \"the usual\"; the cook slides over a whole pie without breaking eye contact with his crossword",
+    "An alien exchange student misreads a school bake sale flyer and arrives with a levitating seventeen-layer cake that begins orbiting the gymnasium while the PTA applauds politely and takes notes",
+    "A grandmother's book club descends into chaos when her cat walks across the ouija board they were definitely not using, and every candle in the room lights itself while the cat looks smug",
+    "A pirate captain attempts a drive-through order from a full-size galleon wedged between the menu board and the pickup window, negotiating for \"forty burgers and amnesty\" through the crackling intercom",
+    "A gym trainer squirrel drills three exhausted acorn-hoarding recruits through an obstacle course of bird feeders, blowing a tiny whistle and shouting \"winter is not going to feed itself, ladies\"",
+    "A ghost tries to haunt a smart home and loses the argument with the voice assistant, which keeps turning the lights back on and cheerfully logging his moaning as \"unrecognized command\"",
+    "The world's most dramatic weatherman reports a single small cloud with hurricane-level intensity, ripping off his jacket to reveal a second identical jacket as one raindrop lands on the lens",
+    "A T-rex attends a pottery class and, refusing all help, throws a magnificent vase using only his enormous head and tiny furious arms while the instructor slowly puts down her clipboard",
+    "A robot on his first day as a mall fountain cleaner declares war on the coins, announcing \"wishes are not legal tender\" and vacuuming them up while children boo him from the railing",
+    "A sloth wins a high-stakes game show buzzer round by pure accident, his hand landing on the button eleven seconds after the question, and celebrates in real time as confetti falls in fast motion",
+    "A medieval town crier transitions to reading internet comments off a scroll in the town square, ringing his bell and bellowing \"SKILL ISSUE, quoth PlagueEnjoyer42\" to a horrified crowd",
+    "A duck family conducts a full airport-security-style inspection of picnickers at the pond, one duckling waving a metal detector wand over a terrified man's sandwich before confiscating it whole",
+    "A superhero with the power of \"mild convenience\" saves the day by finding everyone's keys, holding elevator doors, and untangling one earbud knot, then poses heroically as the city half-heartedly cheers",
+    "A conspiracy-theorist goat presents a corkboard of string and photographs to the barnyard, proving the farmer's \"free-range\" claims are a cover-up, while the chickens gasp on cue",
+    "An opera singer gets a job doing supermarket announcements and cannot turn it off, delivering \"CLEANUP ON AISLE FIVE\" as a heartbreaking aria while shoppers weep among the frozen peas"
+  ]
+}

@@ -10,6 +10,10 @@ venv/
 .env
 .env.local
 
+# Local creative presets stay local; only the shipped default is tracked.
+streaming-client/presets/*.json
+!streaming-client/presets/default.json
+
 # Editor and OS state
 .vscode/
 .idea/
