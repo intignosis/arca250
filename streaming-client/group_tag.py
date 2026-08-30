@@ -46,13 +46,28 @@ def pick_next(clips: list[dict], ready_only: bool = True) -> dict | None:
 
     The single playout policy, shared by the director (which sends the
     `play`) and the overlay (which shows "coming up") so the broadcast never
-    announces one clip and plays another. Within each class, queue order —
-    which is build-completion order — decides, so a group's scenes stay
-    sequential. With `ready_only` false, the same preference over the whole
-    queue: what *will* play next once built.
+    announces one clip and plays another. Applied to the playout queue for
+    the actual play decision; with `ready_only` false it ranks any list of
+    clips (the overlay uses it on the generation queue to preview what will
+    play once built). Within each class, queue order decides, so a group's
+    scenes stay sequential.
     """
     pool = [c for c in clips if c.get("ready")] if ready_only else clips
     for clip in pool:
         if not is_generated(clip):
             return clip
     return pool[0] if pool else None
+
+
+def viewer_insert_position(generation_clips: list[dict]) -> int | None:
+    """Where a viewer clip enters the generation queue: ahead of filler.
+
+    The index of the first filler clip — so viewer scenes land behind every
+    viewer clip already waiting (first-come-first-served) and ahead of all
+    idle filler, which just slides back. ``None`` when no filler waits:
+    plain append is already the right spot.
+    """
+    for index, clip in enumerate(generation_clips):
+        if is_generated(clip):
+            return index
+    return None

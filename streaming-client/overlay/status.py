@@ -90,12 +90,13 @@ class StreamStatusOverlay(Overlay):
         """Display info for the clip the director will play next.
 
         The same `pick_next` the playout loop uses (viewer content before
-        filler, ready clips preferred), so the overlay never announces one
-        clip while another plays. With nothing ready yet, the preference
-        runs over the whole queue: what will play once built.
+        filler), so the overlay never announces one clip while another
+        plays. With the playout queue empty, the preference runs over the
+        generation queue instead: what will play once built.
         """
-        clips = self._link.queue_clips
-        choice = pick_next(clips) or pick_next(clips, ready_only=False)
+        choice = pick_next(self._link.playout_clips) or pick_next(
+            self._link.generation_clips, ready_only=False
+        )
         return _clip_display(choice)
 
     # --------------------------------------------------------- composing
@@ -118,7 +119,10 @@ class StreamStatusOverlay(Overlay):
             primary = f'type "{self._chat_command} <your idea>" in chat'
             secondary = None
 
-        badge = f"QUEUE {self._link.queued}/{self._link.queue_capacity}"
+        badge = (
+            f"READY {self._link.playout_queued}/{self._link.playout_capacity}"
+            f" · GEN {self._link.generation_queued}"
+        )
 
         out = frame.copy()
         x = y = _MARGIN

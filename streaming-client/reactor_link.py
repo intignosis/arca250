@@ -6,8 +6,9 @@
     (queue contents die with a session server-side; see the README), while
     the pacer and sink outside this class keep the broadcast alive;
   * the media path — the recvonly video and audio tracks feed the pacer;
-  * a live mirror of the model's `state_update` / `queue_update`, so the
-    rest of the client reads state instead of re-deriving it;
+  * a live mirror of the model's `state_update` / `queue_update` (both the
+    generation and the playout queue), so the rest of the client reads state
+    instead of re-deriving it;
   * a fan-out of every model message to registered listeners.
 
 The model contract this speaks is the fasth3 clip queue (`../fasth3/fasth3_types.py`
@@ -45,8 +46,10 @@ _DEFAULT_STATE: dict[str, Any] = {
     "height": 768,
     "clip_seconds_min": 5.167,
     "clip_seconds_max": 14.375,
-    "queued": 0,
-    "queue_capacity": 10,
+    "generation_queued": 0,
+    "generation_capacity": 20,
+    "playout_queued": 0,
+    "playout_capacity": 10,
 }
 
 
@@ -68,7 +71,8 @@ class ReactorLink:
         self._first_state = asyncio.Event()
         self._listeners: list[Callable[[str, dict], None]] = []
         self.state: dict[str, Any] = dict(_DEFAULT_STATE)
-        self.queue_clips: list[dict] = []
+        self.generation_clips: list[dict] = []
+        self.playout_clips: list[dict] = []
 
     # -------------------------------------------------------------- wiring
 
@@ -91,12 +95,20 @@ class ReactorLink:
         return float(self.state.get("clip_seconds_max", 14.375))
 
     @property
-    def queued(self) -> int:
-        return int(self.state.get("queued", 0))
+    def generation_queued(self) -> int:
+        return int(self.state.get("generation_queued", 0))
 
     @property
-    def queue_capacity(self) -> int:
-        return int(self.state.get("queue_capacity", 10))
+    def generation_capacity(self) -> int:
+        return int(self.state.get("generation_capacity", 20))
+
+    @property
+    def playout_queued(self) -> int:
+        return int(self.state.get("playout_queued", 0))
+
+    @property
+    def playout_capacity(self) -> int:
+        return int(self.state.get("playout_capacity", 10))
 
     @property
     def canvas(self) -> tuple[int, int]:
@@ -120,7 +132,8 @@ class ReactorLink:
         if kind == "state_update":
             self.state = data
         elif kind == "queue_update":
-            self.queue_clips = data.get("clips", [])
+            self.generation_clips = data.get("generation", [])
+            self.playout_clips = data.get("playout", [])
         elif kind == "command_error":
             logger.warning(
                 "[reactor] command refused: %s — %s",
@@ -208,9 +221,11 @@ class ReactorLink:
         if isinstance(state, dict) and "width" in state:
             self.state = state
         logger.info(
-            "[reactor] canvas %dx%d, clip range %.3f-%.3fs, queue %d/%d",
+            "[reactor] canvas %dx%d, clip range %.3f-%.3fs, "
+            "generation %d/%d, playout %d/%d",
             *self.canvas, self.min_seconds, self.max_seconds,
-            self.queued, self.queue_capacity,
+            self.generation_queued, self.generation_capacity,
+            self.playout_queued, self.playout_capacity,
         )
 
         # Autoplay stays off (the session default): the director owns playout

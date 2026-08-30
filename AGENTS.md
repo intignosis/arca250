@@ -25,14 +25,16 @@ end state (no iteration narration).
 
 ## How the system works — read this before changing anything
 
-The model is a **clip queue plus a player**. `enqueue` takes a prompt
+The model is **two queues plus a player**. `enqueue` takes a prompt
 (≤ 800 chars), an opaque `metadata` string (≤ 2000 chars), and optionally
-`seed` and `seconds` (snapped into 5.167–14.375 s); it replies immediately
-with the clip's full structure and UUID. Builds run in queue order —
-`build_next` on an enqueue inserts it ahead of every clip whose build has
-not started — and readiness is broadcast on `queue_update`. Nothing plays
-until `play` (this client keeps `set_autoplay` off and drives playout
-itself). Playback streams 24 fps video (`main_video`, 1344×768 at the default
+`seed`, `seconds` (snapped into 5.167–14.375 s), and `position` in the
+**generation queue**; it replies immediately with the clip's full structure
+and UUID. Builds consume the generation queue front-first, always (pausing
+only while the playout queue is full); each finished clip crosses into the
+**playout queue** (`clip_generated`), where `play`, `move`, and `pop` give
+the client full positional control. Nothing plays until `play` (this client
+keeps `set_autoplay` off and drives playout itself). Playback streams 24 fps
+video (`main_video`, 1344×768 at the default
 16:9 canvas) and 48 kHz mono int16 audio (`main_audio`), then flushes to
 black and holds. The metadata is echoed untouched on every message that
 references the clip — it is how a client correlates clips with its own
@@ -51,11 +53,12 @@ One chat prompt becomes one **scene group**: a single scene, or a chunked
 short story of up to `MAX_CHUNKS` short clips — the upsampling LLM picks the
 shape — enqueued contiguously, each clip tagged with a JSON group id in the
 metadata. The director drives playout itself (autoplay off): `pick_next`
-plays ready viewer content before ready filler, judged purely from the
-metadata echo, and an arriving viewer group pops every unbuilt filler clip
-so the GPUs build it next — behind viewer clips already waiting (viewer
-FIFO). A queue full of viewer content drops new prompts, and capacity is
-read live from `state_update`. Viewer prompts pass the OpenAI
+plays viewer content before filler from the playout queue, judged purely
+from the metadata echo, and viewer groups insert into the generation queue
+ahead of waiting filler and behind waiting viewers (`enqueue`'s `position`)
+so the GPUs build them next, FIFO among viewers. A viewer backlog at the
+clip budget drops new prompts, and every capacity is read live from
+`state_update`. Viewer prompts pass the OpenAI
 moderations API first (own endpoint, fail-closed; see `moderator.py`). While
 chat is quiet, an idle filler tops the queue up to `IDLE_QUEUE_TARGET` with
 single-scene groups tagged `generated: true`; viewer groups evict those
@@ -73,14 +76,15 @@ scene title/author, coming up — all reconstructed from the metadata echo).
    `pick_next` (in `group_tag.py`) is the single playout policy — the
    director's `run_playout` is the only sender of `play`, and the overlay's
    "coming up" reads the same function. Group sequencing rests on the
-   Director being the queue's only writer (viewer worker and idle filler
-   serialize through one lock), viewer FIFO on popping unbuilt filler
-   before appending a viewer group (never on `build_next`, which cannot
-   express "behind the other viewers"), and a group being enqueued only
-   when all its scenes fit the remaining capacity — eviction (`pop` on
-   `generated: true` clips only) makes that room, and a queue full of
-   viewer content drops new prompts. Do not add orchestration beyond this,
-   and do not break any of these legs.
+   Director being the queues' only writer (viewer worker and idle filler
+   serialize through one lock), viewer FIFO on positional inserts ahead of
+   filler (`viewer_insert_position` → `enqueue`'s `position`), and a group
+   being enqueued only when all its scenes fit the generation queue —
+   waiting-filler eviction (`pop` on `generated: true` clips only) makes
+   that room, one built filler per tick is popped when a full playout
+   queue blocks a viewer build, and a viewer backlog at the clip budget
+   drops new prompts. Do not add orchestration beyond this, and do not
+   break any of these legs.
 2. **The pacer and sink survive Reactor reconnects; the queue does not.**
    Sink + pacer are created once and never torn down mid-run — that is what
    keeps the platform-side broadcast unbroken. Server-side session state
