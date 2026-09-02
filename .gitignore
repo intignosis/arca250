@@ -25,3 +25,12 @@ fal/reference/
 .vscode/
 .idea/
 .DS_Store
+
+# Source footage and reference art: DASHWORLD's own media, some of it
+# unreleased. Never tracked — the repo is public.
+fal/clips/
+fal/clips_rejected/
+fal/reference/
+fal/reference_rejected/
+fal/out/
+fal/dash_lora.json
