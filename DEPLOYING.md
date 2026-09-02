@@ -101,20 +101,59 @@ Two consequences worth acting on:
    up front, pay for nothing.
 2. **Never leave a session open.** An idle session bills at the full rate.
 
-### Register on four GPUs first
+### Register on ONE GPU first
+
+FastVideo's own preview post puts the checkpoint's minimum at **1x B200**, and
+the memory arithmetic in `fasth3.yaml` agrees: the resident footprint is
+~92 GB per rank against 183 GB on a B200, so a single card holds the
+replicated transformer and its text encoder with no offloading config change
+at all. `gpu.count: 1` also satisfies the "must divide H3's 56 attention
+heads" rule.
+
+What GPU count buys is **latency, not clips per dollar**. Scaling is poor at
+the top — 4 to 8 GPUs takes a 15 s clip from ~15.5 s to ~12.9 s, 20% faster
+for twice the money — which means cost per clip stays roughly flat while the
+burn rate per second does not:
+
+| | ~Build/clip | Reference $/hr | ~$/clip | Clips for $10 | $10 lasts |
+| --- | --- | --- | --- | --- | --- |
+| 1xB200 | ~50 s (est.) | $6.12 | ~$0.085 | ~118 | **~100 min** |
+| 4xB200 | 14.4 s (measured) | ~$24 | ~$0.098 | ~102 | ~25 min |
+| 8xB200 | 12.9 s (measured) | $75.24 | ~$0.270 | ~37 | ~8 min |
+
+Same clips either way; wildly different wall-clock. On one GPU the $10 lasts
+an hour and a half instead of eight minutes — room to watch the output, fix a
+prompt, and re-run, instead of racing a meter.
+
+**The rule that decides the count later:** a live feed needs build time under
+clip duration, or every clip boundary waits on the GPUs. At 14.4 s per
+14.375 s clip, **four is the realtime floor**. One GPU at ~0.3x realtime
+renders fine test clips and could never sustain a broadcast. So: one GPU to
+judge the creative work, four when `arca250live` goes live, eight only once
+continuous running shows boundaries stalling.
+
+### An unresolved timing discrepancy
+
+FastVideo's post reports **47.2 s** for a 15 s clip on 8xB200. `fast-h3/README.md`
+reports **14.4 s** on four. Both cannot describe the same code path.
+
+The likely reconciliation is in `fast-h3/README.md` itself: the published
+`fastvideo-kernel` wheel's `sm_100a` binary "fails *every* launch on this
+driver", and the Triton fallback route is "~2.5x slower". 14.4 x 2.5 = 36 s,
+the right order of magnitude for 47.2 s. That would make the blog's figure the
+un-tuned route and the repo's the source-built sm100a profile — which is
+exactly why `reactor.yaml` compiles the kernel from source.
+
+Worth confirming on the first deployment, because it is load-bearing: at
+47 s/clip nothing about a realtime feed works at any GPU count.
+
+### Register on four GPUs when going live
 
 For a credit-limited first run, four B200s beat eight. Eight build a 15 s clip
 in ~12.9 s against ~15.5 s on four — 20% faster for 100% more money:
 
-| | Build/clip | $/sec | Cost per clip | Clips for $10 |
-| --- | --- | --- | --- | --- |
-| 8xB200 | 12.9 s | 2x | 25.8 units | ~28 |
-| 4xB200 | 15.5 s | 1x | 15.5 units | **~47** |
-
-Eight GPUs buy latency headroom for a feed where builds must outpace playback
-24/7. They do not buy throughput per dollar. Change `gpu.count` to 4 in
-`fast-h3/reactor.yaml` for the first run; move to 8 when the channel is
-running continuously and clip boundaries start waiting on the GPUs.
+Move to eight only when clip boundaries start waiting on the GPUs. `gpu.count`
+lives in `fast-h3/reactor.yaml`.
 
 ## Running continuously, when it gets there
 
@@ -125,6 +164,15 @@ The Claude layer is lunch money by comparison: ~$0.04 per viewer prompt and
 ~$4.50/hour of idle filler on `claude-opus-5`, roughly 5x less on
 `claude-haiku-4-5` (`ANTHROPIC_MODEL` in `.env`). Moderation is negligible —
 it only fires on viewer prompts.
+
+## What the checkpoint cannot do
+
+FastVideo's post is explicit: text-to-video-and-audio is the shipped task.
+**Image-to-video is not supported**; first/last-frame (FL2VA) and
+reference-to-video are "in development". This settles the `zhuma/fasth3-i2v`
+branch question — it anchors on conditioning the checkpoint does not have.
+Build on `main`. Quantization (FP8, NVFP4) and an 8-step variant are also
+unreleased, so today's cost is the cost.
 
 ## Open questions for Reactor
 
