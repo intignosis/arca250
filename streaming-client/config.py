@@ -95,10 +95,10 @@ class Config:
     local: bool
     local_url: str
 
-    # Upsampling
-    openai_api_key: str
-    openai_base_url: str | None
-    openai_model: str
+    # Upsampling (Claude, via the Anthropic SDK)
+    anthropic_api_key: str
+    anthropic_base_url: str | None
+    anthropic_model: str
     max_chunks: int
 
     # Preset: the creative bundle (style + premade idle prompts)
@@ -106,9 +106,9 @@ class Config:
     style: str
     idle_prompts: tuple[str, ...]
 
-    # Moderation (its own endpoint: the upsampling gateway may not expose
-    # /moderations, so this can point at api.openai.com while upsampling
-    # goes elsewhere)
+    # Moderation. A separate provider on purpose: Anthropic has no
+    # moderations endpoint, so upsampling runs on Claude while the
+    # fail-closed safety classifier stays on OpenAI's /moderations.
     moderation_enabled: bool
     moderation_api_key: str
     moderation_base_url: str | None
@@ -162,6 +162,8 @@ class Config:
         else:
             load_dotenv()  # ./.env when present; no-op otherwise
 
+        anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        anthropic_base_url = os.environ.get("ANTHROPIC_BASE_URL") or None
         openai_api_key = os.environ.get("OPENAI_API_KEY", "")
         openai_base_url = os.environ.get("OPENAI_BASE_URL") or None
 
@@ -178,9 +180,9 @@ class Config:
             local_url=args.local_url
             or os.environ.get("REACTOR_LOCAL_URL")
             or "http://localhost:8080",
-            openai_api_key=openai_api_key,
-            openai_base_url=openai_base_url,
-            openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            anthropic_api_key=anthropic_api_key,
+            anthropic_base_url=anthropic_base_url,
+            anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-opus-5"),
             max_chunks=max(1, int(os.environ.get("MAX_CHUNKS", "6"))),
             preset_name=preset_name,
             style=preset["style"],
@@ -214,8 +216,14 @@ class Config:
             raise SystemExit(
                 "Either REACTOR_API_KEY (hosted) or --local / REACTOR_LOCAL=1 is required."
             )
-        if not self.openai_api_key:
-            raise SystemExit("OPENAI_API_KEY is required for prompt upsampling.")
+        if not self.anthropic_api_key:
+            raise SystemExit("ANTHROPIC_API_KEY is required for prompt upsampling.")
+        if self.moderation_enabled and not self.moderation_api_key:
+            raise SystemExit(
+                "MODERATION_API_KEY (an OpenAI key) is required while "
+                "MODERATION_ENABLED=1 — Anthropic has no moderations endpoint. "
+                "Set MODERATION_ENABLED=0 only if you accept an unmoderated stream."
+            )
         if self.sink == "rtmp" and not self.rtmp_url:
             raise SystemExit("SINK=rtmp needs RTMP_URL (including the stream key).")
         if self.sink not in ("rtmp", "noop"):

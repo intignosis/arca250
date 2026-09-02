@@ -2,7 +2,7 @@
 
 Wiring, in dependency order:
 
-  chat sources ──▶ Director ──▶ PromptUpsampler (OpenAI-compatible LLM)
+  chat sources ──▶ Director ──▶ PromptUpsampler (Claude)
                       │
                       ▼ enqueue (scene groups, tagged via metadata) + play
                  ReactorLink ◀──▶ served fast-h3 model (local or hosted)
@@ -75,11 +75,11 @@ async def main() -> None:
 
     link = ReactorLink(config)
     upsampler = PromptUpsampler(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
+        api_key=config.anthropic_api_key,
+        model=config.anthropic_model,
         style=config.style,
         max_chunks=config.max_chunks,
-        base_url=config.openai_base_url,
+        base_url=config.anthropic_base_url,
     )
     moderator = Moderator(
         api_key=config.moderation_api_key,

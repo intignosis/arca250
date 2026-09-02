@@ -1,6 +1,6 @@
 """Prompt upsampling: turn a viewer's rough idea into fast-h3-ready scenes.
 
-One LLM call per prompt, against any OpenAI-compatible endpoint. The model
+One Claude call per prompt, through the Anthropic SDK. The model
 picks the shape the idea calls for — one scene of any legal length, or a
 chunked short story of up to `max_chunks` short clips with a setup,
 development, and payoff — writes each scene as a self-contained
@@ -42,7 +42,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,31 @@ The "scenes" array is REQUIRED even when it holds a single scene; never
 flatten a scene's fields to the top level.
 """
 
+# The shape `output_config.format` constrains every reply to. It mirrors the
+# JSON block spelled out in the system prompt above: the model is both told
+# the shape and held to it, so `_validate_scenes` is checking values, not
+# guessing at structure.
+_REPLY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "scenes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "seconds": {"type": "number"},
+                },
+                "required": ["prompt", "seconds"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["title", "scenes"],
+    "additionalProperties": False,
+}
+
 _MULTI_SCENE_RULES = """\
 HOW MANY SCENES, AND HOW LONG — two shapes; pick what the idea calls for:
 - ONE SCENE: a single clip that ALWAYS runs the full {max_seconds} seconds —
@@ -167,7 +192,7 @@ class PromptUpsampler:
         max_chunks: int,
         base_url: str | None = None,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
         self._model = model
         self._style = style.strip() or "Cinematic, photoreal, rich natural light."
         self._max_chunks = max_chunks
@@ -284,20 +309,30 @@ class PromptUpsampler:
         caches identical ones, so a bare retry of a failed prompt would get
         the same failed reply back in milliseconds.
         """
-        response = await self._client.chat.completions.create(
+        response = await self._client.messages.create(
             model=self._model,
+            system=system,
             messages=[
-                {"role": "system", "content": system},
                 {
                     "role": "user",
                     "content": f"Viewer idea: {raw_prompt}\n\n[request {request_tag}]",
-                },
+                }
             ],
-            temperature=0.8,
             max_tokens=1800,
-            response_format={"type": "json_object"},
+            # Low effort with thinking left adaptive: this call sits in the
+            # stream's critical path (a viewer's `!prompt` waits on it), and
+            # staging one scene is not a reasoning problem. Sampling knobs
+            # (`temperature`) are gone on current Claude models — the variety
+            # that mattered comes from `request_tag` making every attempt a
+            # distinct request, which is already here.
+            output_config={
+                "effort": "low",
+                "format": {"type": "json_schema", "schema": _REPLY_SCHEMA},
+            },
         )
-        content = response.choices[0].message.content or ""
+        content = next(
+            (b.text for b in response.content if b.type == "text"), ""
+        )
         data = json.loads(content or "{}")
         title = str(data.get("title") or raw_prompt[:60]).strip()
         raw_scenes = data.get("scenes")
@@ -313,7 +348,7 @@ class PromptUpsampler:
         if not scenes:
             raise ValueError(
                 "no usable scenes in the reply "
-                f"(finish={response.choices[0].finish_reason}, head={content[:200]!r})"
+                f"(stop={response.stop_reason}, head={content[:200]!r})"
             )
         if len(scenes) == 1:
             # A single-clip generation always runs the maximum length; short
