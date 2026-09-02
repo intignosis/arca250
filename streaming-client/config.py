@@ -120,6 +120,9 @@ class Config:
     # Overlay (which overlay runs is code, main.py; this only switches it)
     overlay_enabled: bool
 
+    # Rehearsal: broadcast without a model (delivery-path test).
+    rehearse: bool
+
     # Sink
     sink: str  # "rtmp" | "noop"
     rtmp_url: str | None
@@ -157,6 +160,12 @@ class Config:
             help="local runtime URL (default REACTOR_LOCAL_URL or http://localhost:8080)",
         )
         parser.add_argument("--sink", default=None, choices=("rtmp", "noop"))
+        parser.add_argument(
+            "--rehearse", action="store_true",
+            help="start broadcasting immediately with the default canvas and "
+                 "no model: black frames, overlay, and the music bed — for "
+                 "proving the delivery path end to end",
+        )
         parser.add_argument("--rtmp-url", default=None, help="override RTMP_URL")
         parser.add_argument("--preset", default=None, help="override PRESET")
         args = parser.parse_args(argv)
@@ -198,6 +207,7 @@ class Config:
             idle_queue_target=int(os.environ.get("IDLE_QUEUE_TARGET", "6")),
             overlay_enabled=_flag(os.environ.get("OVERLAY_ENABLED", "1")),
             sink=(args.sink or os.environ.get("SINK", "noop")).lower(),
+            rehearse=bool(getattr(args, "rehearse", False)),
             rtmp_url=args.rtmp_url or os.environ.get("RTMP_URL") or None,
             rtmp_video_bitrate_k=int(os.environ.get("RTMP_VIDEO_BITRATE_K", "4500")),
             music_path=os.environ.get("MUSIC_PATH") or None,

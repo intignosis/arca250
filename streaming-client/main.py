@@ -149,9 +149,16 @@ async def main() -> None:
     try:
         # The sink's geometry comes from the deployment (state_update), so the
         # pacer starts only once the first session is up. From then on it and
-        # the sink survive every reconnect.
-        await link.wait_first_state()
-        width, height = link.canvas
+        # the sink survive every reconnect. --rehearse skips the wait and
+        # brings the broadcast up on the default canvas with no model at all:
+        # the pacer emits black frames plus the overlay, the music bed rises
+        # to fill the silence, and the whole delivery path runs for real.
+        if config.rehearse:
+            width, height = 1344, 768
+            logger.info("REHEARSAL: broadcasting without a model")
+        else:
+            await link.wait_first_state()
+            width, height = link.canvas
         # The overlay to broadcast is a code decision; swap the class here.
         overlay = (
             StreamStatusOverlay(link, chat_command=config.chat_command)
