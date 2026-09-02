@@ -1,3 +1,36 @@
+# arca250
+
+DASHWORLD's chat-driven generative broadcast — Reactor's
+[infinite-livestream](https://github.com/reactor-team/infinite-livestream)
+running the DASHWORLD world instead of the upstream house style. Viewers type
+`!prompt <idea>` in Twitch chat, an LLM writes the idea into a scene set in
+Arca 250 or neon Tokyo, FastH3 generates it as 768p video with synchronized
+audio, and it goes out over RTMP as one continuous stream.
+
+**Channel:** [twitch.tv/arca250live](https://twitch.tv/arca250live)
+**Preset:** [`streaming-client/presets/dashworld.json`](streaming-client/presets/dashworld.json)
+— the style block and idle beats that carry the cast (DASH, EK-0, Tele,
+Syler, Seraphina, NODE and the Black Saints, Caribel) and the running theme,
+The Remembering.
+
+Upstream is wired as the `upstream` remote; `git fetch upstream && git merge
+upstream/main` pulls their changes. Everything below this line is upstream's
+own README.
+
+## Setup
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r streaming-client/requirements.txt
+cd streaming-client && cp .env.example .env      # already set: PRESET=dashworld, TWITCH_CHANNEL=arca250live
+```
+
+Then fill in `.env`: `OPENAI_API_KEY` (upsampling + moderation),
+`REACTOR_API_KEY` (the hosted 8xB200 FastH3 deploy), and `RTMP_URL`
+(`rtmp://live.twitch.tv/app/<STREAM_KEY>`) with `SINK=rtmp` when going live.
+`.env` is gitignored; keys never land in the repo.
+
+---
+
 # infinite-livestream
 
 An end-to-end, chat-driven, never-ending AI video broadcast. Viewers type
