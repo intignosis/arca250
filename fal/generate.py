@@ -36,18 +36,23 @@ sys.path.insert(0, str(CLIENT))
 import config  # noqa: E402
 from upsampler import PromptUpsampler  # noqa: E402
 
-MODEL = "minimax/h3/image-to-video/lora"
+# The `/lora` variant rejects an empty `loras` list, so an unanchored or
+# first-frame-only run has to go to the base endpoint instead.
+MODEL = "minimax/h3/image-to-video"
+MODEL_LORA = "minimax/h3/image-to-video/lora"
 # $ per second of generated video, by the model's resolution enum.
 COST_PER_SECOND = {"480P": 0.0625, "768P": 0.075, "2K": 0.1625, "4K": 0.20}
 # fal takes whole seconds; fast-h3's legal range does not apply here.
 MIN_SECONDS, MAX_SECONDS = 5, 10
 
 
-def load_lora(spec: str, scale: float) -> list[dict]:
-    """A `loras` entry from either a trainer output file or a bare URL."""
+def load_lora(spec: str, scale: float) -> tuple[list[dict], str]:
+    """A `loras` entry plus the trigger phrase, from a trainer output file or bare URL."""
     path = Path(spec)
-    url = json.loads(path.read_text())["lora_file"]["url"] if path.is_file() else spec
-    return [{"path": url, "scale": scale}]
+    if path.is_file():
+        record = json.loads(path.read_text())
+        return [{"path": record["lora_file"]["url"], "scale": scale}], record.get("trigger_phrase", "")
+    return [{"path": spec, "scale": scale}], ""
 
 
 async def stage(args, style: str, ideas: list[tuple[str, str]]) -> list:
@@ -134,12 +139,20 @@ def main() -> int:
             "prompt": scene.prompt,
             "duration": secs,
             "resolution": args.resolution,
-            "loras": load_lora(args.lora, args.lora_scale) if args.lora else [],
         }
+        endpoint = MODEL
+        if args.lora:
+            endpoint = MODEL_LORA
+            loras, trigger = load_lora(args.lora, args.lora_scale)
+            arguments["loras"] = loras
+            # The trigger phrase activates the trained concept; prepend it so
+            # every LoRA render actually engages the adapter.
+            if trigger and trigger not in arguments["prompt"]:
+                arguments["prompt"] = f"{trigger}. " + arguments["prompt"]
         if args.image_url:
             arguments["image_url"] = args.image_url
         print(f"\n[{index}/{len(scenes)}] {group.title} ({secs}s)...")
-        result = fal_client.subscribe(MODEL, arguments=arguments, with_logs=False)
+        result = fal_client.subscribe(endpoint, arguments=arguments, with_logs=False)
         url = result["video"]["url"]
         destination = args.out / f"{index:02d}_{group.group_id[:8]}.mp4"
         urllib.request.urlretrieve(url, destination)
