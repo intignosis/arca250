@@ -16,6 +16,11 @@ streaming-client/presets/*.json
 !streaming-client/presets/default.json
 !streaming-client/presets/dashworld.json
 
+# Training footage and generated clips are large and not ours to redistribute.
+fal/clips/
+fal/out/
+fal/reference/
+
 # Editor and OS state
 .vscode/
 .idea/
