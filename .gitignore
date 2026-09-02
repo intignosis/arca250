@@ -10,9 +10,11 @@ venv/
 .env
 .env.local
 
-# Local creative presets stay local; only the shipped default is tracked.
+# Local creative presets stay local; the shipped default and this project's
+# own DASHWORLD preset are tracked.
 streaming-client/presets/*.json
 !streaming-client/presets/default.json
+!streaming-client/presets/dashworld.json
 
 # Editor and OS state
 .vscode/
