@@ -1,0 +1,125 @@
+# FastH3 — clip queue configuration.
+#
+# `inference` is the generation recipe and the queue's shape; `runtime` is the
+# weight layout and the engine shape. fasth3_assets.py reads this file (the
+# runtime hands over the path and does not parse it).
+
+inference:
+  # Aspect the session starts at. `set_canvas` can change it while the queue is
+  # empty and nothing plays, to any entry in clip_plan.ASPECT_CHOICES. 16:9
+  # resolves to 1344x768 — the canvas every published FastH3 number was
+  # measured at.
+  aspect: "16:9"
+
+  # Default clip length in seconds; `set_clip_seconds` changes it per session
+  # and each `enqueue` snapshots the value in force. 14.375 s is the longest
+  # the checkpoint will generate: 15.0 s is 360 frames, which aligns up to 362
+  # (15.083 s) and is then rejected for exceeding the duration cap, so 345
+  # frames is the ceiling.
+  clip_seconds: 14.375
+
+  # Most built clips the playout queue holds; generation pauses while it is
+  # full. Every entry holds a fully built clip in host memory — about 1 GB of
+  # uint8 pixels at the 16:9 canvas and the longest length — so this bound is
+  # also the model's host-memory budget for built clips. Size
+  # `resources.memory` in the manifest together with it.
+  queue_size: 10
+
+  # Most clips the generation queue holds; `enqueue` is refused beyond it.
+  # Entries here are prompts, not pixels, so the bound is about protecting the
+  # build backlog, not memory. Independent of queue_size — any ratio of the
+  # two is valid: each bound gates only its own entrance (`enqueue` here, the
+  # build submission for the playout queue), and they meet only through the
+  # build pause while the playout queue is full. Both are published live in
+  # `state_update` as generation_capacity / playout_capacity.
+  generation_queue_size: 20
+
+  # Seed the first `enqueue` of a session uses; each one advances it by one.
+  # `set_seed` overrides per session.
+  seed: 1000
+
+  # Sigma-grid POINTS, not transformer forwards. The distilled schedule is
+  # t=999,749,500,250 -> 0: five points and exactly four forwards. Changing this
+  # leaves the trained schedule and is not supported by the checkpoint.
+  num_inference_steps: 5
+
+  # Video Sparse Attention. 0.9 / tile 64 / sm100a is the checkpoint's trained
+  # and measured policy (fastvideo_inference.json); the sm100a kernel is built
+  # from source at image build time (see requirements.txt) because the
+  # published wheel's binary cannot launch on this driver. On Blackwell Ultra
+  # (B300, capability 10.3) the same route runs through the sm_103a binary in
+  # the same extension — sitecustomize.py widens the package's (10, 0)-only
+  # device gate, or the engine silently falls back. `triton` is the portable
+  # fallback for a non-Blackwell box and is much slower.
+  vsa_sparsity: 0.9
+  vsa_tile_size: 64
+  vsa_kernel: sm100a
+
+  # FA4 for the dense (text and audio) attention paths, and the inference-only
+  # H3 fusions. Both are part of the measured profile. The fusions change
+  # floating-point operation order, so they are not bit-exact against the
+  # eager route; set h3_fusions: false to compare.
+  fa4: true
+  h3_fusions: true
+
+  # Regional compile of the transformer blocks, and an independently compiled
+  # video VAE decoder. Both are in the measured profile. Regional compile is
+  # shape-keyed, which is why every clip length and canvas has to be warmed.
+  inference_torch_compile: true
+  compile_vae: true
+
+  # Sequence-parallel all-to-all route. `off` reproduces the measured profile;
+  # `auto` opts into the fused NVLink kernel when the installed kernel package
+  # supports it.
+  ulysses_a2a: "off"
+
+  # Canvases warmed at load, one full build each at the default clip length.
+  # Adding an entry costs pod-boot time; leaving one out means the first clip
+  # built at that canvas pays a one-off compile stall.
+  warmup_aspects: ["16:9"]
+
+  # Clip lengths warmed at load, each one throwaway build at the primary
+  # canvas: "default" (just clip_seconds), "all" (every legal length — there
+  # are 14, 5.167 s to 14.375 s), or a list of seconds. Every unwarmed length
+  # pays a one-off ~20 s regional-compile stall on its first build. "all"
+  # costs roughly 14 builds of boot time (~5-8 min on four B200s) and is the
+  # right setting for a feed that enqueues arbitrary lengths, like the
+  # streaming client's upsampler.
+  warmup_lengths: "all"
+
+runtime:
+  # Weight bundle layout, relative to the mounted weights root. One HF snapshot
+  # carries every component — transformer, text encoder, both VAEs, both
+  # schedulers, tokenizer and processor. "." means the components sit directly
+  # under the weights root, which is how `reactor weights upload` lays the
+  # bundle out; name a subdirectory here when the snapshot is nested instead.
+  checkpoint_dir: "."
+
+  # Sequence parallelism spans every GPU (sp_size == num_gpus, tp_size 1).
+  # Eight builds a 15 s clip in ~12.9 s — faster than it plays — which is
+  # what keeps a continuously fed stream free of build-starved boundaries
+  # (four measured ~15.5-17 s, slower than playback). The count must divide
+  # H3's 56 attention heads.
+  num_gpus: 8
+
+  # true replicates the transformer on every rank (~66 GB per GPU) — the
+  # configuration FastVideo's published numbers were measured at, and the
+  # fastest denoise (FSDP sharding halves the per-GPU weight cost but roughly
+  # doubles the denoise time gathering layers). The offloaded text encoder
+  # below is what leaves the VRAM for it.
+  replicated_dit: true
+
+  # Offload policy. The text encoder is ~63 GB and every rank loads its own
+  # copy; offloading it to the host would cost ~63 GB of host memory per rank
+  # (~500 GB on eight — size resources.memory in reactor.yaml with it) plus a
+  # transfer per clip. On a dedicated 8-GPU Blackwell pod the resident
+  # footprint (~92 GB per rank) fits comfortably in VRAM (183 GB per B200,
+  # 288 GB per B300), so the offload is off: no per-clip page-in, and the
+  # host stays small. Turn it back on only for shared machines, together
+  # with pin_cpu_memory and a much larger resources.memory.
+  offload_text_encoder: false
+  offload_vae: false
+
+  # Pinned host buffers only matter when the offload above is on (they speed
+  # the per-clip page-in); off together with it.
+  pin_cpu_memory: false
