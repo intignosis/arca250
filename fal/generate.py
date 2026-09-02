@@ -75,7 +75,9 @@ def main() -> int:
     parser.add_argument("--preset", default="dashworld")
     parser.add_argument("--lora", help="fal/dash_lora.json, or a .safetensors URL")
     parser.add_argument("--lora-scale", type=float, default=1.0)
-    parser.add_argument("--image-url", help="first frame — a DASH reference render")
+    parser.add_argument("--image-url", help="first frame — a DASH reference render, by URL")
+    parser.add_argument("--image", type=Path,
+                        help="first frame from a local file; uploaded to fal and used as --image-url")
     parser.add_argument("--resolution", default="768P", choices=list(COST_PER_SECOND))
     parser.add_argument("--max-chunks", type=int, default=1,
                         help="scenes per idea; 1 keeps each idea to one clip")
@@ -88,6 +90,13 @@ def main() -> int:
         if not os.environ.get(key):
             print(f"{key} is not set.", file=sys.stderr)
             return 1
+
+    if args.image and not args.image_url:
+        if not args.image.is_file():
+            print(f"no such image: {args.image}", file=sys.stderr)
+            return 1
+        print(f"uploading {args.image.name} as the first frame...")
+        args.image_url = fal_client.upload_file(args.image)
 
     preset = config.load_preset(args.preset)
     ideas = [(text, "you") for text in args.idea]
@@ -108,9 +117,12 @@ def main() -> int:
         print(f"       {scene.prompt[:150]}...")
     print(f"\n{len(scenes)} clips, {seconds}s at {args.resolution}")
     print(f"COST   ${seconds * rate:.2f}  (${rate}/s)")
-    if not args.lora:
-        print("\nNote: no --lora, so the character is text-described only —")
-        print("the very thing the LoRA exists to fix.")
+    if not args.lora and not args.image_url:
+        print("\nNote: no --lora and no first frame, so the character is")
+        print("text-described only — nothing anchors his design.")
+    elif not args.lora:
+        print("\nFirst-frame anchored, no LoRA: DASH starts exactly as the")
+        print("reference render and drifts from there. Watch how fast.")
     if not args.confirm:
         print("\nDry run. Re-run with --confirm to generate and be charged.")
         return 0
