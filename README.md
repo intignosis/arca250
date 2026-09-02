@@ -13,6 +13,9 @@ audio, and it goes out over RTMP as one continuous stream.
 Syler, Seraphina, NODE and the Black Saints, Caribel) and the running theme,
 The Remembering.
 
+**Deploying:** [`DEPLOYING.md`](DEPLOYING.md) — what it takes to get the
+model onto Reactor and on the air, with the real per-second rates.
+
 Upstream is wired as the `upstream` remote; `git fetch upstream && git merge
 upstream/main` pulls their changes. Everything below this line is upstream's
 own README.
