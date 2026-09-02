@@ -165,6 +165,33 @@ The Claude layer is lunch money by comparison: ~$0.04 per viewer prompt and
 `claude-haiku-4-5` (`ANTHROPIC_MODEL` in `.env`). Moderation is negligible —
 it only fires on viewer prompts.
 
+## The cheaper first move: prove DASH on fal
+
+Everything above buys a *channel*. None of it answers whether the character
+looks like DASH — and on this checkpoint it cannot, because fast-h3 renders
+from a description and re-rolls the character every clip.
+
+fal serves **MiniMax H3**, the model FastH3 is distilled from, with
+first-frame conditioning and LoRA adapters, audio included. That is the
+fidelity answer, and it needs no Docker, no 148 GB upload, and no reserved
+pod. See [`fal/README.md`](fal/README.md); the scripts are wired and refuse
+to spend without `--confirm`.
+
+| Route | Setup | Per second of video | 24/7 month |
+| --- | --- | --- | --- |
+| fal MiniMax H3 @ 768p | none — an API key | $0.075 | ~$194,000 |
+| Reactor 4xB200 fast-h3 | build + 148 GB + register | ~$0.007 | ~$17,000 |
+| Reactor 8xB200 fast-h3 | build + 148 GB + register | ~$0.019 | ~$54,000 |
+
+The structure inverts on duty cycle: fal has no idle burn and no floor, so it
+wins for generating a little; a saturated reserved GPU is 4-11x cheaper per
+video-second, so Reactor wins for running continuously. **Use fal to decide
+whether the creative works, Reactor to run it once it does.**
+
+The first spend worth making is ~$20 of LoRA training on DASHWORLD's existing
+visualizers plus ~$15 of test clips — which settles the character question
+before a single GPU-hour is reserved.
+
 ## What the checkpoint cannot do
 
 FastVideo's post is explicit: text-to-video-and-audio is the shipped task.
