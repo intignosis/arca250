@@ -23,10 +23,15 @@ import json
 import os
 import sys
 import tempfile
+import pathlib
 import zipfile
 from pathlib import Path
 
 import fal_client
+from dotenv import load_dotenv
+
+# Keys live in the client's .env, same as generate.py.
+load_dotenv(pathlib.Path(__file__).resolve().parent.parent / "streaming-client" / ".env")
 
 TRAINER = "minimax/h3/i2v/trainer"
 COST_PER_STEP = 0.01

@@ -124,6 +124,10 @@ class Config:
     sink: str  # "rtmp" | "noop"
     rtmp_url: str | None
     rtmp_video_bitrate_k: int
+    # Music bed, mixed under the scene audio by the rtmp sink (ducked so
+    # dialogue and drops stay in front). Empty disables it.
+    music_path: str | None
+    music_volume: float
 
     # Chat
     chat_command: str
@@ -196,6 +200,8 @@ class Config:
             sink=(args.sink or os.environ.get("SINK", "noop")).lower(),
             rtmp_url=args.rtmp_url or os.environ.get("RTMP_URL") or None,
             rtmp_video_bitrate_k=int(os.environ.get("RTMP_VIDEO_BITRATE_K", "4500")),
+            music_path=os.environ.get("MUSIC_PATH") or None,
+            music_volume=float(os.environ.get("MUSIC_VOLUME", "0.35")),
             chat_command=os.environ.get("CHAT_COMMAND", "!prompt").strip(),
             chat_cooldown_s=float(os.environ.get("CHAT_COOLDOWN_S", "30")),
             twitch_channel=os.environ.get("TWITCH_CHANNEL") or None,

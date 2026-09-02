@@ -241,6 +241,11 @@ reports health via `alive`.
 | `SINK=` | Class | Notes |
 | --- | --- | --- |
 | `rtmp` | `RtmpSink` | ffmpeg → RTMP(S). Twitch, YouTube Live, Kick are all just ingest URLs. |
+
+With `MUSIC_PATH` set, the rtmp sink loops that audio file under the
+broadcast and sidechain-ducks it beneath the scene audio, so dialogue and
+drops stay in front and the bed fills the holds between clips.
+
 | `noop` | `NoOpSink` | Discards everything, logs a heartbeat. Full pipeline dry-run. |
 
 To add one (LiveKit, SFU, file recorder): implement `StreamSink`, register it

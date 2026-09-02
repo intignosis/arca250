@@ -36,6 +36,15 @@ way:
     (platform requirement), CBR-ish bitrate with `-maxrate`/`-bufsize`,
     AAC 44.1 kHz stereo audio.
 
+  * **The music bed is mixed inside ffmpeg, not in Python.** With a
+    `music_path`, a third input loops the file forever and a sidechain
+    compressor ducks it under the scene audio (dialogue and drops stay in
+    front; the bed fills the black holds between clips). Doing this in the
+    encoder keeps the compose path free and survives writer-thread stalls.
+    An ffmpeg restart rewinds the bed to the top of the file — harmless for
+    a looping mix. `amix` runs with `normalize=0`, so levels are governed
+    only by `music_volume` and the ducking; requires ffmpeg >= 4.4.
+
 Requires ffmpeg on PATH. Uses `pass_fds`, so it runs on Linux/macOS.
 """
 
@@ -63,6 +72,10 @@ _MAX_CONSECUTIVE_FAILURES = 5
 # Bounded writer queues: ~2 seconds of stream each. Deep enough to ride out an
 # encoder hiccup, shallow enough that overflow (dropping oldest) barely shows.
 _QUEUE_SECONDS = 2.0
+
+# Ducking curve for the music bed: keyed on the scene audio, fast enough to
+# clear a spoken line, slow enough not to pump on every kick drum.
+_DUCK = "threshold=0.03:ratio=10:attack=25:release=600"
 
 
 class _PipeWriter(threading.Thread):
@@ -119,11 +132,21 @@ class _PipeWriter(threading.Thread):
 class RtmpSink(StreamSink):
     """Encode with ffmpeg and push to one RTMP(S) ingest URL."""
 
-    def __init__(self, url: str, video_bitrate_k: int = 4500) -> None:
+    def __init__(
+        self,
+        url: str,
+        video_bitrate_k: int = 4500,
+        music_path: str | None = None,
+        music_volume: float = 0.35,
+    ) -> None:
         if shutil.which("ffmpeg") is None:
             raise RuntimeError("ffmpeg not found on PATH; install it first")
+        if music_path and not os.path.isfile(music_path):
+            raise RuntimeError(f"MUSIC_PATH does not exist: {music_path}")
         self._url = url
         self._bitrate_k = video_bitrate_k
+        self._music_path = music_path
+        self._music_volume = music_volume
         self._video: VideoFormat | None = None
         self._audio: AudioFormat | None = None
         self._process: subprocess.Popen[bytes] | None = None
@@ -170,7 +193,26 @@ class RtmpSink(StreamSink):
             "-ar", str(audio.sample_rate),
             "-ac", str(audio.channels),
             "-i", f"pipe:{audio_read_fd}",
-            "-map", "0:v", "-map", "1:a",
+        ]
+        if self._music_path:
+            cmd += [
+                # --- music bed: looped file, ducked under the scene audio ---
+                "-stream_loop", "-1", "-i", self._music_path,
+                "-filter_complex",
+                (
+                    # [1:a] feeds both the sidechain key and the mix, so it
+                    # must be split explicitly — reusing a pad silently ends
+                    # the graph at the first consumer (found the hard way).
+                    "[1:a]asplit=2[key][scene];"
+                    f"[2:a]volume={self._music_volume}[bed];"
+                    f"[bed][key]sidechaincompress={_DUCK}[ducked];"
+                    "[scene][ducked]amix=inputs=2:duration=first:normalize=0[mix]"
+                ),
+                "-map", "0:v", "-map", "[mix]",
+            ]
+        else:
+            cmd += ["-map", "0:v", "-map", "1:a"]
+        cmd += [
             # --- video encode ---
             "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-pix_fmt", "yuv420p",

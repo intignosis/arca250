@@ -124,6 +124,8 @@ async def main() -> None:
         config.sink,
         rtmp_url=config.rtmp_url,
         rtmp_video_bitrate_k=config.rtmp_video_bitrate_k,
+        music_path=config.music_path,
+        music_volume=config.music_volume,
     )
 
     tasks: list[asyncio.Task] = [
