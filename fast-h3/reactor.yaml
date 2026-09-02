@@ -5,7 +5,7 @@ model:
   name: fast-h3
   # Bare semver, no `v` prefix — the platform's release tag format; the
   # registration validator refuses a prefixed one.
-  version: 0.5.5
+  version: 0.5.6
   description: |
     Generate 768p video clips with synchronized audio from a queue of prompts.
     MiniMax-H3 (35B), distilled by FastVideo to four transformer forwards with
@@ -39,13 +39,19 @@ model:
   # inference.queue_size in fasth3.yaml. If the offload flags in
   # fasth3.yaml are turned back on, memory must rise to several hundred Gi
   # (8 ranks × ~63 GB pinned) — see the note there.
+  # First-deployment sizing: ONE B200. The count must divide H3's 56
+  # attention heads (1 does), the resident footprint (~92 GB per rank) fits a
+  # single card's 183 GB with no offload change, and at ~0.3x realtime one
+  # GPU renders test clips at roughly a quarter of the burn rate per second.
+  # Return count to 8 (and cpu to 64/64) for a realtime channel — see
+  # DEPLOYING.md for the arithmetic.
   resources:
     gpu:
       type: NVIDIA_B200
-      count: 8
+      count: 1
     cpu:
-      request: "64"
-      limit: "64"
+      request: "16"
+      limit: "16"
     # Sized for the resident text encoder: on eight dedicated Blackwell GPUs
     # each rank holds its own copy in VRAM (fasth3.yaml turns the offload
     # off), so the host carries only the load transient and the built-clip
@@ -136,3 +142,4 @@ build:
     # quota and CFS throttles them (measured: 38% of periods at limit 32).
     # Eight threads per process keeps the total under resources.cpu.
     OMP_NUM_THREADS: "8"
+

@@ -34,3 +34,6 @@ fal/reference/
 fal/reference_rejected/
 fal/out/
 fal/dash_lora.json
+
+# Model weights live on disk only; the registry carries them, git never does.
+fast-h3/weights/
