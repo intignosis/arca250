@@ -71,6 +71,45 @@ reactor model status
 Then put the deployed model's slug in `streaming-client/.env` as
 `REACTOR_MODEL`, drop `--local`, and the client connects to it.
 
+## The gate that stops everything: serve access
+
+`reactor model register` refuses with **403: serve access is not enabled for
+this account**. It is an account-level permission, not a manifest or image
+problem: the same key authenticates, reaches the server, and lists the 29
+public models fine — it simply may not publish one. That also explains why
+every model in the catalogue reports `is_owned: false`.
+
+Nothing local fixes this. Email **support@reactor.inc** and ask for serve /
+model-deployment access on the account (Reactor is in beta; deploying custom
+models appears to be gated separately from consuming hosted ones). Everything
+below is already done and waits only on that reply.
+
+**Ready and verified, as of 2026-09-02:**
+
+| | |
+| --- | --- |
+| Image | `reactor-local/fast-h3:dev`, 21.8 GB — built clean on Colima, kernels compiled from source (56 min compile + 25 min export) |
+| Weights | 147.9 GB verified shard-by-shard against every `.index.json`: transformer 14/14, text encoder 14/14, vae 3/3, audio_vae 1 |
+| Manifest | 1xB200, cpu 16/16, `model.version` 0.5.6 |
+| Toolchain | Colima VM (12 cpu / 20 GB / 200 GB) + `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` — no admin password anywhere |
+
+**Two things to get right when access lands.** The upload must target the
+snapshot directory itself, because `fasth3.yaml` sets `checkpoint_dir: "."`
+and the components must sit directly under the weights root:
+
+```sh
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+cd fast-h3
+reactor model register
+reactor model publish --weights weights/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree
+reactor model deploy && reactor model status
+```
+
+And the CLI warns that `reactor.yaml` uses the superseded `reactor/v1`
+format — harmless today, but a future CLI will require `$schema: reactor/v2`
+(nest `recording:` under `runtime:`, a plan's `instances:` under
+`deployment:`).
+
 ## Cost, from Reactor's live pricing API
 
 `GET api.reactor.inc/pricing` returns real rates. 10,000 credits = $1, billed
