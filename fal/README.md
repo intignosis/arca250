@@ -50,6 +50,26 @@ what it would generate and what it would cost, and exits.
 `presets/dashworld.json`, so scenes are staged in the identical voice the
 live stream uses — the only thing that changes is where they are rendered.
 
+## Rendering a training set from the rig
+
+`render_training_set.py` renders LoRA training clips from `Dash - rigged.blend`
+headless — canonical geometry, native 16:9 at 24 fps, no captions, no
+compression artefacts, and free. It builds its own orbit camera and key/rim
+lights rather than trusting the file's, sweeps three lighting states, and
+emits ~17 clips: turntables, busts, face close-ups, boot passes, low hero
+angles, plus action shots when the rig ships animation.
+
+```sh
+blender --background "Dash - rigged.blend" \
+    --python fal/render_training_set.py -- --out fal/clips_rig
+python fal/train_lora.py fal/clips_rig --trigger DASH250
+```
+
+**Blender 4.5 LTS**, not 5.x — 5.0 dropped Intel macOS builds, and the
+Homebrew cask installs the Apple Silicon one, which macOS kills on sight on
+this machine. Clip lengths are 73 and 124 frames, both satisfying the
+trainer's `frames %% 17 == 5` rule, so `auto_scale_input` stays off.
+
 ## Notes
 
 - `--max-chunks 1` keeps one clip per idea, which is what you want when
