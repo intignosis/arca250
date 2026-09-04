@@ -56,8 +56,10 @@ live stream uses — the only thing that changes is where they are rendered.
 headless — canonical geometry, native 16:9 at 24 fps, no captions, no
 compression artefacts, and free. It builds its own orbit camera and key/rim
 lights rather than trusting the file's, sweeps three lighting states, and
-emits ~17 clips: turntables, busts, face close-ups, boot passes, low hero
-angles, plus action shots when the rig ships animation.
+emits ~23 clips: turntables, busts, face close-ups, boot passes, low hero
+angles, plus expression sweeps. The rig carries the ARKit facial set (55
+shapes) but ships no baked animation, so expressions are driven directly —
+neutral to shout, smirk, drained, alert and back — while the camera moves.
 
 ```sh
 blender --background "Dash - rigged.blend" \

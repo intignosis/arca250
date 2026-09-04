@@ -43,6 +43,25 @@ from mathutils import Vector
 SHORT, LONG = 73, 124
 WIDTH, HEIGHT, FPS = 1024, 576, 24
 
+# The rig carries the ARKit facial set (55 shapes), so expressions are
+# drivable without any baked animation. Each pose is grounded in a beat the
+# preset already describes: the shout on a drop, EK-0-adjacent wit, the cost
+# of an awakening, the moment something is remembered. Shapes absent from a
+# given file are skipped, so this survives a rig that names them differently.
+EXPRESSIONS = {
+    "neutral": {},
+    "shout": {"jawOpen": 0.95, "browDownLeft": 0.65, "browDownRight": 0.65,
+              "mouthStretchLeft": 0.5, "mouthStretchRight": 0.5,
+              "noseSneerLeft": 0.3, "noseSneerRight": 0.3},
+    "smirk": {"mouthSmileLeft": 0.75, "mouthSmileRight": 0.25,
+              "browOuterUpLeft": 0.4, "cheekSquintLeft": 0.45,
+              "eyeBlinkLeft": 0.15},
+    "drained": {"browInnerUp": 0.6, "eyeBlinkLeft": 0.45, "eyeBlinkRight": 0.45,
+                "mouthFrownLeft": 0.4, "mouthFrownRight": 0.4, "jawOpen": 0.1},
+    "alert": {"eyeWideLeft": 0.7, "eyeWideRight": 0.7, "browInnerUp": 0.75,
+              "jawOpen": 0.25},
+}
+
 # Three lighting states, as (key energy, key colour, rim colour). The LoRA
 # should learn DASH's design, not one studio setup — so the set spans the
 # neon world he actually lives in.
@@ -70,6 +89,35 @@ def character_bounds() -> tuple[Vector, float]:
         raise SystemExit("no visible meshes in the file — is the rig hidden?")
     centre = (lo + hi) / 2.0
     return centre, max((hi - lo).length / 2.0, 0.001)
+
+
+def shape_key_blocks() -> dict:
+    """Every drivable facial shape in the file, by name."""
+    blocks = {}
+    for obj in bpy.data.objects:
+        if obj.type != "MESH" or not obj.data.shape_keys:
+            continue
+        for block in obj.data.shape_keys.key_blocks:
+            blocks.setdefault(block.name, block)
+    return blocks
+
+
+def key_expression(blocks: dict, pose: dict, frame: int) -> None:
+    """Keyframe one expression: shapes named in the pose take its value, and
+    every other shape is driven back to zero so poses never accumulate."""
+    for name, block in blocks.items():
+        if name.lower() in ("basis", "base"):
+            continue
+        block.value = float(pose.get(name, 0.0))
+        block.keyframe_insert("value", frame=frame)
+
+
+def clear_expression_keys(blocks: dict) -> None:
+    for block in blocks.values():
+        block.value = 0.0
+    for key in bpy.data.shape_keys:
+        if key.animation_data:
+            key.animation_data_clear()
 
 
 def build_rig_camera(centre: Vector, radius: float):
@@ -141,7 +189,7 @@ def configure_scene() -> None:
     scene.render.ffmpeg.ffmpeg_preset = "GOOD"
 
 
-def shot_list(has_action: bool) -> list[dict]:
+def shot_list(has_action: bool, has_shapes: bool) -> list[dict]:
     """The coverage a subject LoRA actually generalises from.
 
     Turntables teach the silhouette from every side; the close-ups teach the
@@ -164,6 +212,15 @@ def shot_list(has_action: bool) -> list[dict]:
             dict(name=f"low_hero_{state}", light=state, frames=SHORT,
                  distance=2.2, height=-0.25, yaw=(200, 340)),
         ]
+    # Expression sweeps are the coverage salvaged footage could never give:
+    # the same face, same light, moving between named states on camera.
+    if has_shapes:
+        for expression in ("shout", "smirk", "drained", "alert"):
+            for state in ("neutral", "neon"):
+                shots.append(dict(
+                    name=f"expr_{expression}_{state}", light=state, frames=SHORT,
+                    distance=0.85, height=0.80, yaw=(-18, 18),
+                    expression=expression))
     if has_action:
         for state in ("neutral", "neon"):
             shots.append(dict(name=f"action_{state}", light=state, frames=LONG,
@@ -189,10 +246,15 @@ def main() -> int:
     rigged = [o for o in bpy.data.objects
               if o.type == "ARMATURE" and o.animation_data and o.animation_data.action]
     has_action = bool(actions and rigged)
-    print(f"[trainset] subject radius {radius:.2f}, "
-          f"{len(actions)} action(s), {len(rigged)} animated armature(s)")
+    blocks = shape_key_blocks()
+    has_shapes = any(name in blocks for pose in EXPRESSIONS.values() for name in pose)
+    print(f"[trainset] subject radius {radius:.2f}, {len(actions)} action(s), "
+          f"{len(rigged)} animated armature(s), {len(blocks)} shape key(s)")
+    if not has_shapes and blocks:
+        print("[trainset] shape keys present but none match the ARKit names — "
+              "expression shots skipped")
 
-    shots = [s for s in shot_list(has_action)
+    shots = [s for s in shot_list(has_action, has_shapes)
              if not args.only or args.only in s["name"]]
     scene = bpy.context.scene
 
@@ -212,6 +274,16 @@ def main() -> int:
             scene.frame_start = 1
             scene.frame_end = frames
 
+        # An expression shot eases neutral -> pose -> neutral across the clip,
+        # so one render carries the whole transition rather than a held face.
+        pose_name = shot.get("expression")
+        if pose_name:
+            pose = EXPRESSIONS[pose_name]
+            mid = scene.frame_start + frames // 2
+            key_expression(blocks, {}, scene.frame_start)
+            key_expression(blocks, pose, mid)
+            key_expression(blocks, {}, scene.frame_end)
+
         for offset in range(frames):
             progress = offset / max(frames - 1, 1)
             frame_subject(cam, pivot, centre, radius, shot["distance"],
@@ -227,6 +299,8 @@ def main() -> int:
 
         pivot.animation_data_clear()
         cam.animation_data_clear()
+        if pose_name:
+            clear_expression_keys(blocks)
         for obj in lights:
             bpy.data.objects.remove(obj, do_unlink=True)
 
